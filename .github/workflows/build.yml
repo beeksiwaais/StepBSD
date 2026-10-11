@@ -111,17 +111,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The shared image assembly (build.sh ASSEMBLY=artifacts calls
-      # nextbsd-ci/scripts/assemble-image.sh). Pinned to the release tag so the
-      # recipe does not drift with nextbsd-ci main. freebsd-vm rsyncs the whole
-      # workspace, so the checkout lands in the VM where build.sh finds it.
-      - name: checkout shared assembly (nextbsd-ci, pinned)
-        uses: actions/checkout@v4
-        with:
-          repository: nextbsd/nextbsd-ci
-          ref: v0.3.5
-          path: nextbsd-ci
-
       - name: free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -167,9 +156,14 @@ jobs:
             export FREEBSD_VERSION=${{ matrix.freebsd }}
             export ARCH=${{ matrix.arch }}
             export IMG_DATE=${{ steps.meta.outputs.date }}
-            # CI images always assemble from the latest component artifacts,
-            # never from pkg (packages are gated release artifacts).
-            export ASSEMBLY=artifacts
+            # Every image this repo publishes assembles from nextbsd-pkg
+            # (pkg install NextBSD-everything) via this repo's own build.sh:
+            # the image ships pkg, its database and the in-image repo config,
+            # so an installed system can `pkg update` / `pkg upgrade` out of
+            # the box. nextbsd-ci is NOT used for assembly here — only for
+            # the img/iso boot-test harness (tests/*-boot-test.sh). Image
+            # freshness follows nextbsd-pkg's last (manual) publish.
+            export ASSEMBLY=pkg
             sh build.sh
 
       - name: checksum + summary
@@ -232,15 +226,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Shared image assembly (build.sh ASSEMBLY=artifacts) — see the build
-      # job above; rsynced into the VM with the workspace.
-      - name: checkout shared assembly (nextbsd-ci, pinned)
-        uses: actions/checkout@v4
-        with:
-          repository: nextbsd/nextbsd-ci
-          ref: v0.3.5
-          path: nextbsd-ci
-
       - name: free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -294,9 +279,9 @@ jobs:
             export BOARD=rpi500
             export KERNEL8=$PWD/kernel8.img
             export IMG_DATE=${{ steps.meta.outputs.date }}
-            # CI images always assemble from the latest component artifacts,
-            # never from pkg (packages are gated release artifacts).
-            export ASSEMBLY=artifacts
+            # Same as the build job above: pkg-assembled from nextbsd-pkg via
+            # this repo's own build.sh; nextbsd-ci is boot-tests only.
+            export ASSEMBLY=pkg
             sh build.sh
 
       - name: checksum + summary

@@ -2,17 +2,19 @@
 # build.sh — assemble bootable NextBSD images.
 #
 # ASSEMBLY selects how the rootfs gets the OS:
-#   artifacts (default — every CI lane)
-#       Lay the component `continuous` artifacts straight into the rootfs:
-#       base + kernel + userland + contrib + kexts tarballs, the same five
-#       components the nextbsd-pkg repo repackages. No pkg anywhere in the
-#       CI image: packages are gated release artifacts, and a CI gate must
-#       test the artifacts that were just built, not a pkg repo whose
-#       rebuild timing is not ours.
-#   pkg (release images only)
-#       One `pkg install NextBSD-everything` from the nextbsd-pkg flat repo.
-#       This is the user-facing assembly: it leaves a pkg database in the
-#       image so an installed system can `pkg upgrade`.
+#   pkg (default — every image this repo publishes)
+#       One `pkg install NextBSD-everything` from the nextbsd-pkg flat repo,
+#       done by this repo's own build.sh. nextbsd-ci is used by this repo
+#       only for the img/iso boot-test harness, never for assembly. It leaves
+#       pkg + its database + the in-image repo config in the image, so an
+#       installed system can `pkg update` / `pkg upgrade` out of the box and
+#       every OS file is package-owned. Image freshness follows nextbsd-pkg's
+#       last (manual) publish — dispatch it first if a component just moved.
+#   artifacts (manual opt-in)
+#       Lay the five component `continuous` tarballs straight into the rootfs
+#       via nextbsd-ci's shared assembly script: a 1:1 snapshot of the
+#       artifacts, no pkg in the image. This repo's workflow does not use
+#       this mode; a hand run needs nextbsd-ci at $ROOT/nextbsd-ci.
 #
 # Either way: the user-editable /etc config (accounts, sshd_config, pam.d,
 # ttys, ...) is NOT OS-owned — it is seeded from the nextbsd-overlays repo
@@ -88,14 +90,13 @@ DIST=$ROOT/distfiles
 RF=$WORK/rootfs
 MIRROR="https://download.freebsd.org/ftp/releases/${ARCH}/${FREEBSD_VERSION}-RELEASE"
 # nextbsd-pkg flat repo: per-arch rolling release tag (continuous-<arch>).
-# PKG assembly mode only (release images); CI images never use pkg — see
-# ASSEMBLY below.
+# Used by ASSEMBLY=pkg — every image this repo publishes.
 PKG_REPO_URL="https://github.com/nextbsd/nextbsd-pkg/releases/download/continuous-${ARCH}"
 
-# How the rootfs gets the OS (see header): `artifacts` = CI (lay the component
-# continuous tarballs straight in, no pkg); `pkg` = release (pkg install
-# NextBSD-everything).
-ASSEMBLY=${ASSEMBLY:-artifacts}
+# How the rootfs gets the OS (see header): `pkg` = every published image
+# (pkg install NextBSD-everything); `artifacts` = manual 1:1 artifact
+# snapshot via nextbsd-ci's shared assembly.
+ASSEMBLY=${ASSEMBLY:-pkg}
 case "$ASSEMBLY" in
   artifacts|pkg) ;;
   *)
@@ -134,7 +135,7 @@ mkdir -p "$RF"
 certctl rehash 2>/dev/null || true
 
 if [ "$ASSEMBLY" = artifacts ]; then
-    # --- ARTIFACTS (CI): the five component `continuous` tarballs -----------
+    # --- ARTIFACTS (manual): the five component `continuous` tarballs -------
     # The same components — and the same placement — that nextbsd-pkg's own
     # build.sh uses, taken straight from the source repos' rolling `continuous`
     # release tags, without the pkg repack. base is laid first and userland
@@ -167,20 +168,20 @@ if [ "$ASSEMBLY" = artifacts ]; then
         done
     fi
 
-    # The SHARED assembly (nextbsd-ci, checked out into the workspace by
-    # build.yml at a pinned release tag) does the rest: stage the five
-    # components into $RF, the Apple /private layout, the nextbsd-overlays
-    # /etc seed, kext auth, offline DBs, cert bundle, ownership. One recipe,
-    # all consumers (userland PR lane, kext lane) share it.
+    # The SHARED assembly (nextbsd-ci, expected at $ROOT/nextbsd-ci) does the
+    # rest: stage the five components into $RF, the Apple /private layout,
+    # the nextbsd-overlays /etc seed, kext auth, offline DBs, cert bundle,
+    # ownership. One recipe, all consumers (userland PR lane, kext lane, and
+    # a manual run of this one) share it.
     #
     # SKIP_ASSEMBLE: this lane keeps its OWN media tail (the 1.5G rw root,
     # the live ISO, the rpi500 image) on the staged rootfs, so the script
     # stages + fixes up and stops before makefs/mkimg.
     #
-    # NOTE: no pkg database in a CI rootfs — that is the point of this mode
-    # (the image is a 1:1 snapshot of the artifacts, nothing more).
+    # NOTE: no pkg database in an artifacts rootfs — that is the point of
+    # this mode (the image is a 1:1 snapshot of the artifacts, nothing more).
     ASM="$ROOT/nextbsd-ci/scripts/assemble-image.sh"
-    [ -f "$ASM" ] || { echo "ERROR: shared assembly $ASM missing (build.yml must check out nextbsd-ci at the pinned tag)" >&2; exit 1; }
+    [ -f "$ASM" ] || { echo "ERROR: shared assembly $ASM missing (ASSEMBLY=artifacts needs nextbsd-ci checked out at $ROOT/nextbsd-ci)" >&2; exit 1; }
     OVL="$WORK/nextbsd-overlays"
     rm -rf "$OVL"; mkdir -p "$OVL"
     git clone --depth 1 https://github.com/nextbsd/nextbsd-overlays "$OVL"
@@ -194,7 +195,7 @@ if [ "$ASSEMBLY" = artifacts ]; then
            SKIP_ASSEMBLE=1
     sh "$ASM"
 else
-    # --- PKG (release): the user-facing install ------------------------------
+    # --- PKG: the user-facing install (default; see header) ------------------
     # ISOLATE to ONLY the NextBSD repo. The vmactions VM ships enabled FreeBSD
     # pkgbase/ports repos that are SIGNED with keys we don't have (they error
     # "Error loading trusted certificates" and jam the SAT solver). Point pkg
@@ -292,8 +293,8 @@ env DESTDIR="$RF" certctl rehash 2>/dev/null || true
 
 # The three pkg-specific blocks that follow (5: in-image repo config, 5b:
 # pkglist bake, 5b: residue clean) run ONLY in pkg assembly mode. An
-# artifacts CI image carries no pkg database, no in-image repo config, and
-# no cached tarballs — all three are skipped there.
+# artifacts (manual) image carries no pkg database, no in-image repo config,
+# and no cached tarballs — all three are skipped there.
 if [ "$ASSEMBLY" = pkg ]; then
 # ---------------------------------------------------------------------------
 # 5. pkg repos in the SHIPPED image (arch-dynamic) so a user on the installed
