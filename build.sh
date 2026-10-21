@@ -1085,7 +1085,8 @@ if [ -e /rofs/sbin/launchd ]; then vlog "union assembled; launchd: /rofs/sbin/la
 mount -t devfs devfs /rofs/dev
 
 # Adopt the union as the real / (repoints every proc's root) and hand off.
-sysctl vfs.pivot=/rofs
+# Its "vfs.pivot: ... -> ..." line is progress (verbose only); errors still print.
+if [ -n "$VERBOSE" ]; then sysctl vfs.pivot=/rofs; else sysctl vfs.pivot=/rofs >/dev/null; fi
 vlog "pivot complete; exec launchd"
 # Drop the mfsroot-only LD_LIBRARY_PATH so launchd + every daemon it spawns use
 # the union's normal ld-elf resolution (/lib + /usr/lib via hints), as on a
