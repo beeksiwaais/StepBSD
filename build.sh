@@ -1025,7 +1025,13 @@ mount -t devfs devfs /dev 2>/dev/null
 # PID 1 starts with no controlling terminal; wire stdout/stderr to the console
 # so these progress lines + any command errors land on the (serial) console.
 exec >/dev/console 2>&1
-echo "[init] NextBSD live root: assembling overlay"
+# Routine progress only on verbose boots (boot -v). start_init() never passes
+# -v to init (only -s), so ask the kernel; -s (single-user) forces it on too.
+# Errors and the single-user banner always print.
+VERBOSE=; [ "$(sysctl -n debug.bootverbose 2>/dev/null)" != 0 ] && VERBOSE=1
+case " $* " in *" -s "*) VERBOSE=1 ;; esac
+vlog() { [ -n "$VERBOSE" ] && echo "[init] $*"; return 0; }
+vlog "NextBSD live root: assembling overlay"
 
 # Boot media (cd9660). Wait for the CD device / GEOM_LABEL node to settle, then
 # try the volume-label node (mkisoimages.sh -b NEXTBSD) first, then raw cd0/cd1.
@@ -1034,11 +1040,11 @@ while [ ! -e /dev/iso9660/NEXTBSD ] && [ ! -e /dev/cd0 ] && [ "$n" -lt 10 ]; do 
 for dev in /dev/iso9660/NEXTBSD /dev/cd0 /dev/cd1; do
 	[ -e "$dev" ] || continue
 	if mount -t cd9660 -o ro "$dev" /media 2>&1; then
-		echo "[init] media mounted from $dev"; break
+		vlog "media mounted from $dev"; break
 	fi
 done
-echo "[init] cd nodes: $(ls -d /dev/iso9660/* /dev/cd* 2>/dev/null) | /media: $(ls /media 2>/dev/null)"
-echo "[init] media: $(ls /media/rootfs.uzip 2>/dev/null || echo rootfs.uzip-MISSING)"
+vlog "cd nodes: $(ls -d /dev/iso9660/* /dev/cd* 2>/dev/null) | /media: $(ls /media 2>/dev/null)"
+if [ -e /media/rootfs.uzip ]; then vlog "media: /media/rootfs.uzip"; else echo "[init] media: rootfs.uzip-MISSING"; fi
 
 # On-demand compressed root: vnode-back the uzip FILE on the CD (no preload),
 # geom_uzip auto-tastes md1 -> /dev/md1.uzip (decompressed on read).
@@ -1048,9 +1054,9 @@ mdconfig -a -t vnode -f /media/rootfs.uzip -u 1
 # returns). Bounded ~20 s wait so a slow taste doesn't race the mount.
 n=0
 while [ ! -c /dev/md1.uzip ] && [ "$n" -lt 20 ]; do n=$((n + 1)); sleep 1; done
-echo "[init] uzip dev: $(ls -l /dev/md1.uzip 2>/dev/null || echo md1.uzip-ABSENT)"
+if [ -e /dev/md1.uzip ]; then vlog "uzip dev: $(ls -l /dev/md1.uzip)"; else echo "[init] uzip dev: md1.uzip-ABSENT"; fi
 mount -o ro /dev/md1.uzip /rofs
-echo "[init] rofs lower: $(ls -d /rofs/sbin 2>/dev/null || echo /rofs-EMPTY)"
+if [ -e /rofs/sbin ]; then vlog "rofs lower: /rofs/sbin"; else echo "[init] rofs lower: /rofs-EMPTY"; fi
 
 # Single-user (boot -s): the kernel passes "-s" to init (us). Stop HERE, in the
 # miniroot, with the read-only compressed base mounted at /rofs so you can
@@ -1071,7 +1077,7 @@ esac
 # Writable upper (tmpfs: dynamic, swap-backed) then union lower=/rofs over it.
 mount -t tmpfs tmpfs /cow
 mount_unionfs /cow /rofs
-echo "[init] union assembled; launchd: $(ls /rofs/sbin/launchd 2>/dev/null || echo launchd-MISSING)"
+if [ -e /rofs/sbin/launchd ]; then vlog "union assembled; launchd: /rofs/sbin/launchd"; else echo "[init] union assembled; launchd: launchd-MISSING"; fi
 
 # launchd (the next PID 1) needs a populated /dev on the NEW root. The kernel's
 # auto-devfs is on the mfsroot's /dev, which the pivot orphans, so mount a fresh
@@ -1080,7 +1086,7 @@ mount -t devfs devfs /rofs/dev
 
 # Adopt the union as the real / (repoints every proc's root) and hand off.
 sysctl vfs.pivot=/rofs
-echo "[init] pivot complete; exec launchd"
+vlog "pivot complete; exec launchd"
 # Drop the mfsroot-only LD_LIBRARY_PATH so launchd + every daemon it spawns use
 # the union's normal ld-elf resolution (/lib + /usr/lib via hints), as on a
 # regular boot. PATH stays exported (the full default set above).
