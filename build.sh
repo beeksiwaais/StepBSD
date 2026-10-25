@@ -313,24 +313,35 @@ if [ "$ASSEMBLY" = pkg ]; then
 #        came from FreeBSD's bootstrap shim, not from pkg itself).
 #      - /private/etc/pkg/NextBSD.conf: the nextbsd-pkg continuous-${MACHINE}
 #        flat repo, priority 100, unsigned (GitHub assets).
-#    The image ships no FreeBSD.conf and nothing in /usr/local/etc/pkg/: a user
-#    who wants FreeBSD packages adds that repo in /usr/local/etc/pkg/repos/.
-#    pkg itself only ever comes from the NextBSD repo. The FreeBSD pkgbase/
-#    ports repos stay on the build VM (its own /etc/pkg); a FreeBSD repo that
-#    5b needs is a build-only file under $WORK, never written into $RF.
+#    build.sh adds one file of its own, /usr/local/etc/pkg/repos/FreeBSD.conf
+#    (pkg.FreeBSD.org/latest, the FreeBSD ports packages), so `pkg install` of
+#    a port works out of the box. It is a third-party repo: it has the default
+#    priority 0 (below NextBSD's 100), and NextBSD's pkg (patches 0001/0004)
+#    never takes pkg itself from it and confines its packages to /usr/local/
+#    and /var/. No /usr/local/etc/pkg.conf is written: pkg's config lives in
+#    /private/etc. The FreeBSD pkgbase base/kmods repos are never shipped;
+#    they stay on the build VM (its own /etc/pkg).
 # ---------------------------------------------------------------------------
 for _pc in pkg.conf pkg/NextBSD.conf; do
     [ -s "$RF/private/etc/$_pc" ] || { echo "ERROR: nextbsd-overlays seed produced no /private/etc/$_pc" >&2; exit 1; }
 done
+FBSD_REPOS="$RF/usr/local/etc/pkg/repos"
+mkdir -p "$FBSD_REPOS"
+cat > "$FBSD_REPOS/FreeBSD.conf" <<CONF
+FreeBSD: {
+  url: "pkg+https://pkg.FreeBSD.org/FreeBSD:15:${ABIARCH}/latest",
+  mirror_type: "srv",
+  enabled: yes
+}
+CONF
 
 # ---------------------------------------------------------------------------
 # 5b. Bake pkglist.txt packages into the shipped rootfs from the FreeBSD ports
 #     repo, so BOTH the published .img and .iso (same rootfs) ship them out of
 #     the box. Empty since #545: pkg comes from the NextBSD repo through
-#     NextBSD-everything. When the list is not empty, a FreeBSD.conf is written
-#     to a build-only REPOS_DIR under $WORK (as $NBREPO is for the NextBSD
-#     install), never into $RF, so the image ships no FreeBSD repo and pkg
-#     ignores the build VM's own signed repos (which jam the SAT solver).
+#     NextBSD-everything. It uses the FreeBSD.conf written just above via a
+#     REPOS_DIR override, so pkg ignores the build VM's own signed repos
+#     (which jam the SAT solver).
 #     pkg resolves each package's full dependency closure automatically — no
 #     manual runtime-lib audit (unlike the base srclist); the libscan step
 #     below then re-verifies the closure over the whole rootfs.
@@ -341,14 +352,6 @@ if [ -f "$ROOT/pkglist.txt" ]; then
     EXTRA_PKGS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$ROOT/pkglist.txt" | tr '\n' ' ')
     if [ -n "$EXTRA_PKGS" ]; then
         echo "==> installing pkglist.txt packages from FreeBSD repo: $EXTRA_PKGS"
-        FBSD_REPOS="$WORK/fbsdrepo"; mkdir -p "$FBSD_REPOS"
-        cat > "$FBSD_REPOS/FreeBSD.conf" <<CONF
-FreeBSD: {
-  url: "pkg+https://pkg.FreeBSD.org/FreeBSD:15:${ABIARCH}/latest",
-  mirror_type: "srv",
-  enabled: yes
-}
-CONF
         pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" update -f
         pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" install -y $EXTRA_PKGS
     fi
@@ -382,8 +385,8 @@ fi
 #     Runs before ALL THREE consumers: the rw disk image (step 6), the compact
 #     rootfs.uzip (step 7), and the mfsroot.
 #     KEEP: /private/etc/pkg.conf and /private/etc/pkg/ — the repo *config*
-#     from nextbsd-overlays (step 5), which the shipped system needs so
-#     `pkg install` works out of the box — and
+#     from nextbsd-overlays and /usr/local/etc/pkg/repos/FreeBSD.conf (step 5),
+#     which the shipped system needs so `pkg install` works out of the box — and
 #     private/var/db/pkg/local.sqlite, the installed-package registry.
 #     The catalogues under private/var/db/pkg/repos are named per repo
 #     (NextBSD, and FreeBSD only if 5b ran); all of them go.
