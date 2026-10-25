@@ -6,7 +6,9 @@
 #       One `pkg install NextBSD-everything` from the nextbsd-pkg flat repo,
 #       done by this repo's own build.sh. nextbsd-ci is used by this repo
 #       only for the img/iso boot-test harness, never for assembly. It leaves
-#       pkg + its database + the in-image repo config in the image, so an
+#       NextBSD's pkg (from the NextBSD repo, via NextBSD-everything) and its
+#       database in the image, and nextbsd-overlays supplies its config
+#       (/private/etc/pkg.conf, /private/etc/pkg/NextBSD.conf), so an
 #       installed system can `pkg update` / `pkg upgrade` out of the box and
 #       every OS file is package-owned. Image freshness follows nextbsd-pkg's
 #       last (manual) publish — dispatch it first if a component just moved.
@@ -296,50 +298,53 @@ pwd_mkdb -p -d "$RF/etc" "$RF/etc/master.passwd"
 # CA trust store for the SHIPPED image (best-effort; the package ships cert.pem).
 env DESTDIR="$RF" certctl rehash 2>/dev/null || true
 
-# The three pkg-specific blocks that follow (5: in-image repo config, 5b:
-# pkglist bake, 5b: residue clean) run ONLY in pkg assembly mode. An
-# artifacts (manual) image carries no pkg database, no in-image repo config,
-# and no cached tarballs — all three are skipped there.
+# The three pkg-specific blocks that follow (5: in-image repo config check,
+# 5b: pkglist bake, 5b: residue clean) run ONLY in pkg assembly mode. An
+# artifacts (manual) image carries no pkg database and no cached tarballs —
+# all three are skipped there.
 if [ "$ASSEMBLY" = pkg ]; then
 # ---------------------------------------------------------------------------
-# 5. pkg repos in the SHIPPED image (arch-dynamic) so a user on the installed
-#    system can `pkg install` out of the box. Exactly TWO repos, deliberately:
-#      - FreeBSD: pkg.FreeBSD.org/latest  (FreeBSD *packages* — ports)
-#      - NextBSD: the nextbsd-pkg continuous flat repo (the NextBSD base/world)
-#    NOT the FreeBSD pkgbase base/kmods repos — NextBSD supplies its own base,
-#    and we never want FreeBSD-base/FreeBSD-kernel packages on the image. Those
-#    are only ever on the build VM (in its own /etc/pkg) and are never written
-#    into $RF. NextBSD rebrands the ABI, so pin FreeBSD:15:<arch> + ignore the
-#    osversion gate (#357). The NextBSD flat repo is unsigned (GitHub assets).
+# 5. pkg config in the SHIPPED image. build.sh writes none (#545): NextBSD's
+#    pkg (nextbsd-contrib src/pkg, patch 0002) reads /private/etc/pkg.conf and
+#    the repos in /private/etc/pkg/, then /usr/local/etc/pkg/repos/, and
+#    nextbsd-overlays (seeded in step 3b) ships exactly two files there:
+#      - /private/etc/pkg.conf: IGNORE_OSVERSION only. No ABI pin: pkg reads
+#        FreeBSD:15:<arch> from /usr/bin/uname's ELF note (#357's NextBSD:15
+#        came from FreeBSD's bootstrap shim, not from pkg itself).
+#      - /private/etc/pkg/NextBSD.conf: the nextbsd-pkg continuous-${MACHINE}
+#        flat repo, priority 100, unsigned (GitHub assets).
+#    build.sh adds one file of its own, /usr/local/etc/pkg/repos/FreeBSD.conf
+#    (pkg.FreeBSD.org/latest, the FreeBSD ports packages), so `pkg install` of
+#    a port works out of the box. It is a third-party repo: it has the default
+#    priority 0 (below NextBSD's 100), and NextBSD's pkg (patches 0001/0004)
+#    never takes pkg itself from it and confines its packages to /usr/local/
+#    and /var/. No /usr/local/etc/pkg.conf is written: pkg's config lives in
+#    /private/etc. The FreeBSD pkgbase base/kmods repos are never shipped;
+#    they stay on the build VM (its own /etc/pkg).
 # ---------------------------------------------------------------------------
-mkdir -p "$RF/usr/local/etc/pkg/repos"
-cat > "$RF/usr/local/etc/pkg/repos/FreeBSD.conf" <<CONF
+for _pc in pkg.conf pkg/NextBSD.conf; do
+    [ -s "$RF/private/etc/$_pc" ] || { echo "ERROR: nextbsd-overlays seed produced no /private/etc/$_pc" >&2; exit 1; }
+done
+FBSD_REPOS="$RF/usr/local/etc/pkg/repos"
+mkdir -p "$FBSD_REPOS"
+cat > "$FBSD_REPOS/FreeBSD.conf" <<CONF
 FreeBSD: {
   url: "pkg+https://pkg.FreeBSD.org/FreeBSD:15:${ABIARCH}/latest",
   mirror_type: "srv",
   enabled: yes
 }
 CONF
-cat > "$RF/usr/local/etc/pkg/repos/NextBSD.conf" <<CONF
-NextBSD: {
-  url: "${PKG_REPO_URL}",
-  enabled: yes,
-  signature_type: none,
-}
-CONF
-cat > "$RF/usr/local/etc/pkg.conf" <<CONF
-ABI = "FreeBSD:15:${ABIARCH}";
-IGNORE_OSVERSION = yes;
-CONF
 
 # ---------------------------------------------------------------------------
 # 5b. Bake pkglist.txt packages into the shipped rootfs from the FreeBSD ports
 #     repo, so BOTH the published .img and .iso (same rootfs) ship them out of
-#     the box (pkg + git). Uses the FreeBSD.conf written just above via a
-#     REPOS_DIR override so pkg ignores the build VM's own signed repos (which
-#     jam the SAT solver). pkg resolves each package's full dependency closure
-#     automatically — no manual runtime-lib audit (unlike the base srclist); the
-#     libscan step below then re-verifies the closure over the whole rootfs.
+#     the box. Empty since #545: pkg comes from the NextBSD repo through
+#     NextBSD-everything. It uses the FreeBSD.conf written just above via a
+#     REPOS_DIR override, so pkg ignores the build VM's own signed repos
+#     (which jam the SAT solver).
+#     pkg resolves each package's full dependency closure automatically — no
+#     manual runtime-lib audit (unlike the base srclist); the libscan step
+#     below then re-verifies the closure over the whole rootfs.
 #     ABI / OSVERSION / IGNORE_OSVERSION / ASSUME_ALWAYS_YES are still exported
 #     from the NextBSD-everything install above.
 # ---------------------------------------------------------------------------
@@ -347,7 +352,6 @@ if [ -f "$ROOT/pkglist.txt" ]; then
     EXTRA_PKGS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$ROOT/pkglist.txt" | tr '\n' ' ')
     if [ -n "$EXTRA_PKGS" ]; then
         echo "==> installing pkglist.txt packages from FreeBSD repo: $EXTRA_PKGS"
-        FBSD_REPOS="$RF/usr/local/etc/pkg/repos"
         pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" update -f
         pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" install -y $EXTRA_PKGS
     fi
@@ -380,9 +384,12 @@ fi
 #     bloated /var then OOM'd that project's boot test.
 #     Runs before ALL THREE consumers: the rw disk image (step 6), the compact
 #     rootfs.uzip (step 7), and the mfsroot.
-#     KEEP: /usr/local/etc/pkg/repos — the repo *config* written in step 5, which
-#     the shipped system needs so `pkg install` works out of the box — and
+#     KEEP: /private/etc/pkg.conf and /private/etc/pkg/ — the repo *config*
+#     from nextbsd-overlays and /usr/local/etc/pkg/repos/FreeBSD.conf (step 5),
+#     which the shipped system needs so `pkg install` works out of the box — and
 #     private/var/db/pkg/local.sqlite, the installed-package registry.
+#     The catalogues under private/var/db/pkg/repos are named per repo
+#     (NextBSD, and FreeBSD only if 5b ran); all of them go.
 #     Host-driven via `pkg -r`, matching the rest of this script (no chroot).
 # ---------------------------------------------------------------------------
 echo "==> pkg clean: drop cached tarballs + fetched repository catalogues"
@@ -393,7 +400,7 @@ pkg -r "$RF" clean -a -y || true
 find "$RF/private/var/cache/pkg" -mindepth 1 -delete 2>/dev/null || true
 rm -rf "$RF/private/var/db/pkg/repos"
 else
-    echo "==> artifacts mode: no pkg database, no in-image repo config, no residue to clean"
+    echo "==> artifacts mode: no pkg database, no residue to clean"
 fi
 
 # ---------------------------------------------------------------------------
