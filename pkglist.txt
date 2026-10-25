@@ -2,9 +2,13 @@
 # ports repo (pkg.FreeBSD.org). Both images are assembled from the same rootfs,
 # so everything listed here ships in BOTH the .img and the .iso.
 #
+# Empty: pkg itself comes from the NextBSD repo through NextBSD-everything
+# (nextbsd-pkg#19), never from pkg.FreeBSD.org. While this list is empty,
+# build.sh writes no FreeBSD repo config at all; when it is not, the FreeBSD
+# repo is a build-only REPOS_DIR under work/ and is not shipped (#545).
+#
 # pkg resolves each package's full dependency closure automatically, so unlike
 # the curated base srclist there is no manual runtime-lib audit — the whole
 # .so closure is installed as packages.
 #
 # One package per line. Blank lines and #-comments are ignored.
-pkg
