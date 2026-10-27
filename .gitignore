@@ -5,3 +5,6 @@ repos/
 *.iso
 *.iso.sha256
 SHA256SUMS
+
+# StepBSD: the pkg repository stepbsd/build-ports.sh builds (CI artifact)
+/stepbsd-packages/

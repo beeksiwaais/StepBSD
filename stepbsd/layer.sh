@@ -5,14 +5,21 @@
 #   ROOT  repo root        RF       staged rootfs      ARCH / ABIARCH
 #   FBSD_REPOS             dir holding the FreeBSD.conf pkg repo (step 5)
 #   ABI / OSVERSION / IGNORE_OSVERSION / ASSUME_ALWAYS_YES  (exported)
+# and reads:
+#   STEPBSD_PKGDIR   the StepBSD pkg repository for this arch, built from
+#                    stepbsd/ports.txt by stepbsd/build-ports.sh
+#                    (default: $ROOT/stepbsd-packages)
+#   STEPBSD_PKG_URL  where images fetch that repository from once published
 #
 # It also defines stepbsd_identity, which build.sh calls after it writes the
 # NextBSD version identity, to brand the image.
 #
 # Everything StepBSD adds to NextBSD is here and under stepbsd/, so a merge
-# from upstream nextbsd/nextbsd only ever touches build.sh's two hook lines.
+# from upstream nextbsd/nextbsd only ever touches build.sh's hook lines.
 
 STEPBSD=$ROOT/stepbsd
+STEPBSD_PKGDIR=${STEPBSD_PKGDIR:-$ROOT/stepbsd-packages}
+STEPBSD_PKG_URL=${STEPBSD_PKG_URL:-https://github.com/beeksiwaais/StepBSD/releases/download/packages-${ARCH}}
 
 # Names from a stepbsd/*.txt list: comments and blank lines dropped, and lines
 # tagged @<arch> kept only for that pkg ABI arch.
@@ -42,45 +49,70 @@ stepbsd_missing_libs() {
 
 echo "==> [stepbsd] GNUstep desktop layer ($ABIARCH)"
 
-# 1. Packages, from the FreeBSD ports repo build.sh configured in step 5.
+# 1. Packages. Two repositories: StepBSD's own (the ports in stepbsd/ports.txt,
+#    built with StepBSD's options) at priority 10, and FreeBSD's (build.sh step
+#    5) at 0, so a port StepBSD builds always comes from StepBSD. The local
+#    repository is named StepBSD like the published one the image points at,
+#    so pkg upgrade on an installed system keeps following it.
+[ -s "$STEPBSD_PKGDIR/packagesite.pkg" ] || {
+    echo "ERROR: [stepbsd] no StepBSD pkg repository at $STEPBSD_PKGDIR" >&2
+    echo "       (build it with: sh stepbsd/build-ports.sh $STEPBSD_PKGDIR)" >&2
+    exit 1
+}
+STEPBSD_REPOS=$(mktemp -d)
+cp "$FBSD_REPOS/FreeBSD.conf" "$STEPBSD_REPOS/"
+cat > "$STEPBSD_REPOS/StepBSD.conf" <<CONF
+StepBSD: {
+  url: "file://$STEPBSD_PKGDIR",
+  signature_type: none,
+  priority: 10,
+  enabled: yes
+}
+CONF
 STEPBSD_PKGS=$(stepbsd_list "$STEPBSD/packages.txt" | tr '\n' ' ')
 echo "==> [stepbsd] pkg install: $STEPBSD_PKGS"
-pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" update -f
+pkg -r "$RF" -o REPOS_DIR="$STEPBSD_REPOS" update -f
 # shellcheck disable=SC2086
-pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" install -y $STEPBSD_PKGS
+pkg -r "$RF" -o REPOS_DIR="$STEPBSD_REPOS" install -y $STEPBSD_PKGS
+rm -rf "$STEPBSD_REPOS"
+
 for _p in gnustep-base gnustep-gui gnustep-back windowmaker gworkspace xlibre-server; do
     pkg -r "$RF" info -e "$_p" || { echo "ERROR: [stepbsd] $_p is not installed" >&2; exit 1; }
 done
-
-# 2. Prune the ImageMagick7 build/Python baggage (stepbsd/prune.txt). The
-#    closure check before and after proves nothing that ships lost a library.
-echo "==> [stepbsd] shared-library closure before pruning"
-STEPBSD_MISS_BEFORE=$(stepbsd_missing_libs)
-STEPBSD_PRUNE=
-for _p in $(stepbsd_list "$STEPBSD/prune.txt"); do
-    pkg -r "$RF" info -e "$_p" && STEPBSD_PRUNE="$STEPBSD_PRUNE $_p"
+# Every port in ports.txt came from the StepBSD repository.
+for _o in $(sed -e 's/#.*//' "$STEPBSD/ports.txt" | awk 'NF { print $1 }'); do
+    _r=$(pkg -r "$RF" query '%R' "$_o")
+    [ "$_r" = StepBSD ] || {
+        echo "ERROR: [stepbsd] $_o came from repository '$_r', not StepBSD" >&2
+        exit 1
+    }
 done
-if [ -n "$STEPBSD_PRUNE" ]; then
-    echo "==> [stepbsd] pkg delete -f:$STEPBSD_PRUNE"
-    # shellcheck disable=SC2086
-    pkg -r "$RF" delete -f -y $STEPBSD_PRUNE
-fi
-echo "==> [stepbsd] shared-library closure after pruning"
-STEPBSD_MISS_AFTER=$(stepbsd_missing_libs)
-if [ -n "$STEPBSD_MISS_BEFORE" ]; then
-    echo "    NOTE: sonames without a provider before pruning (not caused by it):"
-    echo "$STEPBSD_MISS_BEFORE" | sed 's/^/      /'
-fi
-STEPBSD_MISS_NEW=$(printf '%s\n' "$STEPBSD_MISS_AFTER" | while read -r _so _obj; do
-    [ -n "$_so" ] || continue
-    printf '%s\n' "$STEPBSD_MISS_BEFORE" | grep -q "^$_so " || echo "$_so $_obj"
-done)
-if [ -n "$STEPBSD_MISS_NEW" ]; then
-    echo "ERROR: [stepbsd] pruning removed libraries still in use:" >&2
-    echo "$STEPBSD_MISS_NEW" | sed 's/^/      /' >&2
+if pkg -r "$RF" info -e ImageMagick7; then
+    echo "ERROR: [stepbsd] ImageMagick7 is installed; something still depends on it:" >&2
+    pkg -r "$RF" query '%rn' ImageMagick7 >&2
     exit 1
 fi
-echo "    pruning removed no library in use"
+
+# The repository the shipped image upgrades StepBSD's ports from.
+cat > "$RF/usr/local/etc/pkg/repos/StepBSD.conf" <<CONF
+StepBSD: {
+  url: "$STEPBSD_PKG_URL",
+  signature_type: none,
+  priority: 10,
+  enabled: yes
+}
+CONF
+
+# 2. Every shared library any program or library in the image needs is in the
+#    image: the FreeBSD packages against NextBSD's base, and StepBSD's builds.
+echo "==> [stepbsd] shared-library closure"
+STEPBSD_MISSING=$(stepbsd_missing_libs)
+if [ -n "$STEPBSD_MISSING" ]; then
+    echo "ERROR: [stepbsd] libraries needed but not in the image:" >&2
+    echo "$STEPBSD_MISSING" | sed 's/^/      /' >&2
+    exit 1
+fi
+echo "    every NEEDED library has a provider"
 
 # 3. The StepBSD overlay: installer, session, launchd jobs.
 echo "==> [stepbsd] overlay"

@@ -93,12 +93,16 @@ powers off).
 Actions. It installs `NextBSD-everything` from nextbsd-pkg into a staged
 root, then sources [`stepbsd/layer.sh`](stepbsd/layer.sh). The layer:
 
-1. installs [`stepbsd/packages.txt`](stepbsd/packages.txt) from FreeBSD's
-   package repository;
-2. removes [`stepbsd/prune.txt`](stepbsd/prune.txt), about 780 MiB of
-   ImageMagick build and Python dependencies the desktop never loads. A
-   shared-library closure check before and after fails the build if pruning
-   removes a library anything still needs;
+1. installs [`stepbsd/packages.txt`](stepbsd/packages.txt) from two pkg
+   repositories: FreeBSD's, and StepBSD's own at a higher priority. StepBSD's
+   holds the ports in [`stepbsd/ports.txt`](stepbsd/ports.txt), built with
+   StepBSD's options by [`stepbsd/build-ports.sh`](stepbsd/build-ports.sh)
+   natively per architecture. Today that is Window Maker without ImageMagick,
+   which keeps about 1 GiB of ImageMagick, OpenEXR, numpy, gcc and Boost out
+   of the image. Installed systems keep upgrading those ports from StepBSD's
+   repository (`/usr/local/etc/pkg/repos/StepBSD.conf`);
+2. checks that every shared library any program in the image needs is in the
+   image, and fails the build otherwise;
 3. lays [`stepbsd/overlay/`](stepbsd/overlay) onto the root: the installer,
    the X session, and launchd jobs for `gdomap` and for the linker hints and
    caches;
@@ -108,18 +112,21 @@ root, then sources [`stepbsd/layer.sh`](stepbsd/layer.sh). The layer:
 `build.sh` then makes the disk image and the live ISO exactly as NextBSD does.
 
 ```sh
-# on FreeBSD 15.1 (amd64), as root; ARCH=arm64 cross-builds the arm64 image:
+# on FreeBSD 15.1 (amd64), as root; ARCH=arm64 cross-builds the arm64 image
+# (its stepbsd-packages/ must then come from build-ports.sh on an arm64 host):
 pkg install -y git zip
+sh stepbsd/build-ports.sh stepbsd-packages    # StepBSD's own ports
 DIST_NAME=StepBSD ARCH=amd64 sh build.sh      # -> out/StepBSD-amd64-*.{iso,img}.zip
 sh tests/stepbsd-install-test.sh out/StepBSD-amd64-*.iso.zip   # needs qemu + expect
 ```
 
 ### CI and maintenance
 
-- [`stepbsd.yml`](.github/workflows/stepbsd.yml) builds the amd64 and arm64
-  ISOs, runs
+- [`stepbsd.yml`](.github/workflows/stepbsd.yml) builds StepBSD's ports in
+  native FreeBSD VMs, then the amd64 and arm64 ISOs, runs
   [`tests/stepbsd-install-test.sh`](tests/stepbsd-install-test.sh) and
-  publishes `continuous`. On a runner of each architecture, the test installs
+  publishes `continuous`, plus the pkg repositories `packages-amd64` and
+  `packages-arm64`. On a runner of each architecture, the test installs
   to a disk from the live ISO, boots the installed system (amd64: BIOS; arm64:
   UEFI), checks GNUstep at run time, then boots it with UEFI and checks a
   screenshot of the desktop. It runs on every push and

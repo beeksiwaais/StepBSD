@@ -1,0 +1,15 @@
+# FreeBSD ports StepBSD builds itself, with its own options, instead of taking
+# FreeBSD's binary package. stepbsd/build-ports.sh builds them natively for
+# each architecture from the current ports tree (the tree pkg.FreeBSD.org
+# "latest" is built from); CI publishes the result as the StepBSD pkg
+# repository, which images prefer over FreeBSD's (priority 10 > 0).
+#
+# One port per line: <origin> [make arguments ...]. Blank lines and #-comments
+# are ignored.
+
+# Window Maker without ImageMagick. FreeBSD's package links ImageMagick7
+# (OPTIONS_DEFAULT=IMAGEMAGICK), which drags in OpenEXR, Imath and through
+# Imath's Python bindings numpy, gcc, binutils, openblas and boost: about
+# 1 GiB that the desktop never loads. Without it Window Maker still reads PNG,
+# JPEG, TIFF, GIF, WebP and XPM itself.
+x11-wm/windowmaker OPTIONS_UNSET=IMAGEMAGICK

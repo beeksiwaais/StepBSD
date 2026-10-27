@@ -1,0 +1,53 @@
+#!/bin/sh
+#
+# build-ports.sh — build stepbsd/ports.txt into a pkg repository.
+#
+# Runs as root on FreeBSD 15 of the target architecture (CI: a vmactions VM,
+# x86_64 or aarch64). The ports tree is a snapshot of freebsd-ports main, the
+# tree pkg.FreeBSD.org's "latest" packages come from, and every dependency is
+# installed from those packages (USE_PACKAGE_DEPENDS_ONLY), so the result links
+# exactly the libraries the image installs beside it.
+#
+# usage: build-ports.sh <outdir>
+#   <outdir> receives the packages and the repository catalogue (pkg repo).
+
+set -eu
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+OUT=${1:?usage: build-ports.sh <outdir>}
+PORTSDIR=${PORTSDIR:-/usr/ports}
+PORTS_SNAPSHOT=https://codeload.github.com/freebsd/freebsd-ports/tar.gz/refs/heads/main
+
+mkdir -p "$OUT"
+OUT=$(cd "$OUT" && pwd)
+
+# Dependencies come from "latest", like the image's packages (the VM's own
+# FreeBSD.conf points at "quarterly").
+mkdir -p /usr/local/etc/pkg/repos
+cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'CONF'
+FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }
+CONF
+export ASSUME_ALWAYS_YES=yes
+pkg update -f
+
+if [ ! -f "$PORTSDIR/Mk/bsd.port.mk" ]; then
+    echo "==> ports tree: freebsd-ports main snapshot"
+    mkdir -p "$PORTSDIR"
+    fetch -o - "$PORTS_SNAPSHOT" | tar -xzf - -C "$PORTSDIR" --strip-components 1
+fi
+
+export BATCH=yes USE_PACKAGE_DEPENDS_ONLY=yes DISABLE_VULNERABILITIES=yes
+
+sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$HERE/ports.txt" |
+while read -r origin args; do
+    echo "==> $origin $args"
+    # shellcheck disable=SC2086
+    make -C "$PORTSDIR/$origin" $args clean package
+    find "$PORTSDIR/$origin/work/pkg" -name '*.pkg' -exec cp {} "$OUT/" \;
+    # shellcheck disable=SC2086
+    make -C "$PORTSDIR/$origin" $args clean
+done
+
+echo "==> pkg repo $OUT"
+pkg repo "$OUT"
+ls -l "$OUT"

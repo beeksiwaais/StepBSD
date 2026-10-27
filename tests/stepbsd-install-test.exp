@@ -120,6 +120,10 @@ switch -- $phase {
         must "mount -p | awk '\$2 == \"/\"' | grep -q '^/dev/ufs/ROOTFS'"
         must "df -k / | awk 'NR == 2 { exit !(\$2 > 8 * 1024 * 1024) }'"
         must "pkg info -e gnustep-base && pkg info -e gnustep-gui && pkg info -e gnustep-back && pkg info -e windowmaker && pkg info -e gworkspace && pkg info -e xlibre-server"
+        # Window Maker is StepBSD's build (no ImageMagick), and pkg keeps
+        # upgrading it from the StepBSD repository.
+        must "test \"\$(pkg query %R windowmaker)\" = StepBSD && ! pkg info -e ImageMagick7"
+        must "grep -q 'releases/download/packages-' /usr/local/etc/pkg/repos/StepBSD.conf"
         # Every library the desktop's programs need resolves at run time.
         foreach prog {
             /usr/local/GNUstep/System/Applications/GWorkspace.app/GWorkspace
