@@ -22,6 +22,11 @@
 #   VERSION   package version (default 0.0.0.<UTC date and time>)
 #   REUSE_ROOT=1  development: keep the build root of an earlier run (and its
 #             step-3 baseline) and build only the named components in it
+#   SAVE_ROOT=<file>  stop after the build and save the build root and its
+#             baseline to <file> (CI: the build is split into jobs that each
+#             stay under the runner's time limit)
+#   RESTORE_ROOT=<file>  start from a root SAVE_ROOT saved, build the named
+#             components in it, then check and package
 
 set -eu
 
@@ -53,6 +58,14 @@ export ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes
 export ABI=FreeBSD:15:$ABIARCH OSVERSION="$(uname -K)"
 PKG="pkg -r $R -o REPOS_DIR=$WORKDIR/repos"
 REQS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$HERE/requirements.txt" | tr '\n' ' ')
+
+if [ -n "${RESTORE_ROOT:-}" ]; then
+    echo "==> restoring the build root from $RESTORE_ROOT"
+    [ -d "$R" ] && chflags -R noschg "$R"
+    rm -rf "$R" "$WORKDIR/before.mtree"
+    tar -xpf "$RESTORE_ROOT" -C "$WORKDIR"
+    REUSE_ROOT=1
+fi
 
 if [ "${REUSE_ROOT:-}" = 1 ] && [ -f "$WORKDIR/before.mtree" ]; then
     echo "==> reusing the build root $R"
@@ -119,6 +132,16 @@ chroot "$R" /usr/bin/env -i HOME=/root USER=root LOGNAME=root TERM=dumb \
     /bin/sh /build/desktop/build-desktop.sh "$@"
 cp -p "$R"/build/dl/* "$WORKDIR/dl/" 2>/dev/null || true
 
+if [ -n "${SAVE_ROOT:-}" ]; then
+    umount "$R/dev"
+    echo "==> saving the build root to $SAVE_ROOT"
+    # Not /build: sources and objects; the next run unpacks its own.
+    tar --zstd -cf "$SAVE_ROOT" -C "$WORKDIR" --exclude root/build \
+        root before.mtree mtree.exclude repos
+    ls -lh "$SAVE_ROOT"
+    exit 0
+fi
+
 # --- 3. checks ----------------------------------------------------------------
 echo "==> checks"
 changed=$(mtree -f "$WORKDIR/before.mtree" -p "$R" -X "$EXCLUDE" 2>&1 || true)
@@ -151,10 +174,9 @@ $writable"
     sed 's/^/@dir /' "$P/dirs"
 } > "$P/plist"
 
-# Depend on the NextBSD packages the desktop links (everything but the build
-# toolchain), at the versions it was built against.
-deps=$(for d in $(echo "$REQS" | tr ' ' '\n' | grep -v -e NextBSD-everything -e NextBSD-toolchain) \
-         NextBSD-userland NextBSD-freebsd-compat; do
+# Depend on the NextBSD packages the desktop links (not the build toolchain,
+# nor contrib's sudo, zsh and pico), at the versions it was built against.
+deps=$(for d in $(echo "$REQS" | tr ' ' '\n' | grep -v -x -e NextBSD-toolchain -e NextBSD-contrib); do
     $PKG query '    "%n": { origin: "%o", version: "%v" },' "$d"
 done)
 cat > "$P/manifest" <<MANIFEST

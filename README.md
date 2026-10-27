@@ -120,10 +120,12 @@ sh tests/stepbsd-install-test.sh out/StepBSD-<arch>-*.iso.zip
 
 ### CI and maintenance
 
-- [`stepbsd.yml`](.github/workflows/stepbsd.yml) builds the desktop and the
-  images for amd64 and arm64, runs the install test on each and publishes
-  `continuous` and the pkg repositories `packages-amd64` and `packages-arm64`.
-  A weekly run rebuilds against NextBSD's latest packages.
+- [`stepbsd.yml`](.github/workflows/stepbsd.yml) builds the desktop for
+  amd64 and arm64 in native FreeBSD VMs (three chained jobs, since the
+  emulated arm64 build is longer than one job may run), then the images,
+  runs the install test on each and publishes `continuous` and the pkg
+  repositories `packages-amd64` and `packages-arm64`. A weekly run rebuilds
+  against NextBSD's latest packages.
 - [`sync-upstream.yml`](.github/workflows/sync-upstream.yml) merges
   nextbsd/nextbsd into `sync/upstream` every week, builds and tests it, and
   opens a pull request; a conflict opens an issue instead. StepBSD changes
