@@ -21,11 +21,15 @@ PORTS_SNAPSHOT=https://codeload.github.com/freebsd/freebsd-ports/tar.gz/refs/hea
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 
-# Dependencies come from "latest", like the image's packages (the VM's own
-# FreeBSD.conf points at "quarterly").
+# Dependencies come from "latest", like the image's packages. The VM's own
+# repositories (FreeBSD 15: FreeBSD-ports and FreeBSD-ports-kmods, on
+# "quarterly"; older names: FreeBSD) are switched off.
 mkdir -p /usr/local/etc/pkg/repos
-cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'CONF'
-FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }
+cat > /usr/local/etc/pkg/repos/StepBSD-build.conf <<'CONF'
+FreeBSD: { enabled: no }
+FreeBSD-ports: { enabled: no }
+FreeBSD-ports-kmods: { enabled: no }
+FreeBSD-latest: { url: "https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "none", enabled: yes }
 CONF
 export ASSUME_ALWAYS_YES=yes
 pkg update -f
