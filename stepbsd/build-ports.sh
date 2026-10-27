@@ -65,7 +65,11 @@ while read -r origin args; do
     pkg install -y $deps
     # shellcheck disable=SC2086
     make -C "$PORTSDIR/$origin" $args clean package
-    find "$PORTSDIR/$origin/work/pkg" -name '*.pkg' -exec cp {} "$OUT/" \;
+    for pkgfile in "$PORTSDIR/$origin"/work/pkg/*.pkg; do
+        cp "$pkgfile" "$OUT/"
+        # Later ports build against this one, not FreeBSD's package of it.
+        pkg add -f "$pkgfile"
+    done
     # shellcheck disable=SC2086
     make -C "$PORTSDIR/$origin" $args clean
 done

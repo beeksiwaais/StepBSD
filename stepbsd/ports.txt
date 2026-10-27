@@ -4,12 +4,16 @@
 # "latest" is built from); CI publishes the result as the StepBSD pkg
 # repository, which images prefer over FreeBSD's (priority 10 > 0).
 #
-# One port per line: <origin> [make arguments ...]. Blank lines and #-comments
-# are ignored.
+# One port per line: <origin> [make arguments ...], in build order: each port
+# is installed on the build host before the next one builds. Blank lines and
+# #-comments are ignored.
 
-# Window Maker without ImageMagick. FreeBSD's package links ImageMagick7
-# (OPTIONS_DEFAULT=IMAGEMAGICK), which drags in OpenEXR, Imath and through
-# Imath's Python bindings numpy, gcc, binutils, openblas and boost: about
-# 1 GiB that the desktop never loads. Without it Window Maker still reads PNG,
-# JPEG, TIFF, GIF, WebP and XPM itself.
+# Window Maker without ImageMagick. FreeBSD builds both Window Maker and its
+# image library, libwraster, with ImageMagick7 (OPTIONS_DEFAULT=IMAGEMAGICK),
+# which drags in OpenEXR, Imath and through Imath's Python bindings numpy,
+# gcc, binutils, openblas and boost: about 1 GiB the desktop never loads.
+# Without it libwraster still reads PNG, JPEG, TIFF, GIF, WebP and XPM itself.
+# They are the only packages in StepBSD's closure that depend on ImageMagick7
+# (layer.sh fails the build if it shows up again).
+x11-wm/libwraster OPTIONS_UNSET=IMAGEMAGICK
 x11-wm/windowmaker OPTIONS_UNSET=IMAGEMAGICK
