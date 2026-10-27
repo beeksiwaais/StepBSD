@@ -1,0 +1,77 @@
+{
+  Dock = {
+    Applications = (
+      {
+        Command = "/usr/local/GNUstep/Applications/WPrefs.app/WPrefs";
+        Name = Logo.WMDock;
+        AutoLaunch = No;
+        Forced = No;
+        Position = "0,0";
+        Lock = Yes;
+      },
+      {
+        Command = "/usr/local/GNUstep/System/Tools/openapp GWorkspace";
+        Name = GWorkspace.GNUstep;
+        AutoLaunch = Yes;
+        Forced = No;
+        Position = "0,1";
+        Lock = Yes;
+      },
+      {
+        Command = "/usr/local/GNUstep/System/Tools/openapp Terminal";
+        Name = Terminal.GNUstep;
+        AutoLaunch = No;
+        Forced = No;
+        Position = "0,2";
+        Lock = Yes;
+      },
+      {
+        Command = "/usr/local/GNUstep/System/Tools/openapp SystemPreferences";
+        Name = SystemPreferences.GNUstep;
+        AutoLaunch = No;
+        Forced = No;
+        Position = "0,3";
+        Lock = Yes;
+      },
+      {
+        Command = "/usr/local/GNUstep/System/Tools/openapp Preview";
+        Name = Preview.GNUstep;
+        AutoLaunch = No;
+        Forced = No;
+        Position = "0,4";
+        Lock = Yes;
+      },
+      {
+        Command = xterm;
+        Name = xterm.XTerm;
+        AutoLaunch = No;
+        Forced = No;
+        Position = "0,5";
+      }
+    );
+    Position = "-64,0";
+    Lowered = No;
+  };
+  Clip = {
+    Command = "-";
+    Name = Logo.WMClip;
+    AutoLaunch = No;
+    StartHidden = No;
+    StartMiniaturized = No;
+    Forced = No;
+    Position = "0,0";
+    DropCommand = "wmsetbg -u -t %d";
+  };
+  Workspaces = (
+    {
+      Name = "Main";
+      Clip = {
+        Applications = ();
+        Lowered = Yes;
+        Collapsed = No;
+        AutoAttractIcons = No;
+        KeepAttracted = No;
+      };
+    }
+  );
+}

@@ -1,7 +1,8 @@
 name: StepBSD ISO
 
-# Builds the StepBSD live/installer ISO (NextBSD + the GNUstep desktop),
-# tests it end to end in qemu (install to disk, BIOS + UEFI boot of the
+# Builds the StepBSD live/installer ISOs for amd64 and arm64 (NextBSD + the
+# GNUstep desktop), tests each end to end in qemu on a runner of its own
+# architecture (install to disk, BIOS + UEFI boot of the
 # installed system, desktop screenshot) and publishes it to the rolling
 # `continuous` release.
 #
@@ -33,11 +34,16 @@ concurrency:
 
 jobs:
   build:
-    name: build (amd64)
+    name: build (${{ matrix.arch }})
     runs-on: ubuntu-latest
     timeout-minutes: 150
-    outputs:
-      date: ${{ steps.meta.outputs.date }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both arches build in the same x86 FreeBSD VM, as NextBSD's do: pkg
+        # installs the aarch64 packages host-side (pkg -r) and makefs/mkuzip/
+        # mkimg are arch-agnostic.
+        arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +58,9 @@ jobs:
           docker-images: false
           swap-storage: false
 
+      # One date per run would be nicer, but matrix legs cannot share a step
+      # output; each leg stamps its own artifacts and the release job reads
+      # the names back from the files.
       - name: compute build date
         id: meta
         run: echo "date=$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
@@ -69,7 +78,7 @@ jobs:
             pkg install -y bash git rsync zip
           run: |
             set -eu
-            export FREEBSD_VERSION=15.1 ARCH=amd64 ASSEMBLY=pkg DIST_NAME=StepBSD
+            export FREEBSD_VERSION=15.1 ARCH=${{ matrix.arch }} ASSEMBLY=pkg DIST_NAME=StepBSD
             export IMG_DATE=${{ steps.meta.outputs.date }}
             sh build.sh
             # Only out/ needs to come back to the runner; the staged rootfs
@@ -80,15 +89,15 @@ jobs:
       - name: unpack the ISO, checksums
         run: |
           set -eu
-          D=${{ steps.meta.outputs.date }}
+          N=StepBSD-${{ matrix.arch }}-${{ steps.meta.outputs.date }}
           cd out
-          unzip -o "StepBSD-amd64-$D.iso.zip"
-          rm "StepBSD-amd64-$D.iso.zip"
-          sha256sum "StepBSD-amd64-$D.iso" > "StepBSD-amd64-$D.iso.sha256"
-          sha256sum "StepBSD-amd64-$D.img.zip" > "StepBSD-amd64-$D.img.zip.sha256"
+          unzip -o "$N.iso.zip"
+          rm "$N.iso.zip"
+          sha256sum "$N.iso" > "$N.iso.sha256"
+          sha256sum "$N.img.zip" > "$N.img.zip.sha256"
           ls -lh
           {
-            echo "### StepBSD amd64 $D"
+            echo "### $N"
             echo
             echo '```'
             ls -lh
@@ -97,38 +106,55 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: StepBSD-amd64-${{ steps.meta.outputs.date }}
+          name: image-${{ matrix.arch }}
           path: out/
           compression-level: 0
           retention-days: 14
           if-no-files-found: error
 
   install-test:
-    name: install test (amd64)
+    name: install test (${{ matrix.arch }})
     needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # amd64 gets KVM. GitHub's arm64 runner has no /dev/kvm, so that
+          # guest runs on same-arch TCG and gets more time for the desktop.
+          - arch: amd64
+            runner: ubuntu-24.04
+            packages: qemu-system-x86 ovmf
+            gui_wait: 150
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            packages: qemu-system-arm qemu-efi-aarch64
+            gui_wait: 420
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
-          name: StepBSD-amd64-${{ needs.build.outputs.date }}
+          name: image-${{ matrix.arch }}
           path: out/
 
       - name: install qemu + expect
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf expect
+          sudo apt-get install -y --no-install-recommends ${{ matrix.packages }} qemu-utils expect
 
       - name: install, boot and desktop test
-        run: sh tests/stepbsd-install-test.sh out/StepBSD-amd64-*.iso
+        env:
+          ARCH: ${{ matrix.arch }}
+          GUI_WAIT: ${{ matrix.gui_wait }}
+        run: sh tests/stepbsd-install-test.sh out/StepBSD-${{ matrix.arch }}-*.iso
 
       - name: upload test logs and screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: install-test-${{ needs.build.outputs.date }}
+          name: install-test-${{ matrix.arch }}
           path: |
             tests/out/*.log
             tests/out/*.png
@@ -145,33 +171,41 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: StepBSD-amd64-${{ needs.build.outputs.date }}
+          pattern: image-*
           path: out/
+          merge-multiple: true
 
       - uses: actions/download-artifact@v4
         with:
-          name: install-test-${{ needs.build.outputs.date }}
+          pattern: install-test-*
           path: test/
 
       - name: publish to the continuous release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          D: ${{ needs.build.outputs.date }}
         run: |
           set -eu
-          cp test/desktop.png "out/StepBSD-amd64-$D-desktop.png" 2>/dev/null || true
+          for a in amd64 arm64; do
+            iso=$(ls out/StepBSD-$a-*.iso)
+            cp "test/install-test-$a/desktop.png" "${iso%.iso}-desktop.png" 2>/dev/null || true
+          done
+          ls -lh out/
           cat > notes.md <<NOTES
-          Rolling StepBSD build **$D** from \`${GITHUB_SHA}\`: NextBSD (launchd, Mach,
-          Darwin userland) with the GNUstep desktop (Window Maker + GWorkspace).
+          Rolling StepBSD build from \`${GITHUB_SHA}\`: NextBSD (launchd, Mach, Darwin
+          userland) with the GNUstep desktop (Window Maker + GWorkspace).
 
-          - \`StepBSD-amd64-$D.iso\`: live and installer ISO (BIOS + UEFI). Write
-            it to a USB stick or boot it in a VM. It logs \`admin\` in and starts the
-            desktop. Run \`sudo stepbsd-install\` in Terminal to install to disk.
-          - \`StepBSD-amd64-$D.img.zip\`: a ready-installed raw disk image for VMs.
+          | | amd64 (x86-64 PCs) | arm64 (UEFI: VMs, Apple Silicon VMs, Arm servers) |
+          |---|---|---|
+          | live + installer ISO | \`$(basename out/StepBSD-amd64-*.iso)\` | \`$(basename out/StepBSD-arm64-*.iso)\` |
+          | installed disk image | \`$(basename out/StepBSD-amd64-*.img.zip)\` | \`$(basename out/StepBSD-arm64-*.img.zip)\` |
 
-          CI installed this ISO to a disk in qemu, booted the installed system with
-          BIOS and with UEFI, and checked GNUstep at run time. The screenshot is the
-          desktop from that run.
+          The ISO boots BIOS or UEFI (amd64) or UEFI (arm64). It logs \`admin\` in and
+          starts the desktop. Run \`sudo stepbsd-install\` in Terminal to install to disk.
+
+          CI installed each ISO to a disk in qemu, booted the installed system
+          (amd64 with BIOS and with UEFI, arm64 with UEFI), and checked GNUstep at
+          run time. The \`*-desktop.png\` screenshots are the desktops from those
+          runs.
           NOTES
           gh release view continuous >/dev/null 2>&1 ||
             gh release create continuous --title "StepBSD continuous" --notes "first build" --prerelease
@@ -180,6 +214,6 @@ jobs:
             gh release delete-asset continuous "$a" --yes
           done
           gh release upload continuous out/* --clobber
-          gh release edit continuous --title "StepBSD continuous $D" --notes-file notes.md --prerelease
+          gh release edit continuous --title "StepBSD continuous $(date -u +%Y-%m-%d)" --notes-file notes.md --prerelease
           git tag -f continuous "$GITHUB_SHA"
           git push -f origin refs/tags/continuous

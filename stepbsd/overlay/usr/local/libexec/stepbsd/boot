@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# Run at every boot by launchd (org.stepbsd.boot), and once in a chroot by the
+# image build when it is native (stepbsd/layer.sh).
+#
+# NextBSD runs no rc.d at boot, so nothing else builds what a FreeBSD package
+# post-install would leave behind:
+#   - the run-time linker hints, every boot. The GNUstep libraries live in
+#     directories rtld's default path does not cover
+#     (/usr/local/GNUstep/System/Library/Libraries, ...), listed in
+#     /usr/local/libdata/ldconfig/ and folded in by /etc/rc.d/ldconfig;
+#   - the font, MIME, GLib schema, pixbuf loader and desktop file caches, once.
+#     A cross-built image (arm64) gets them on its first boot.
+
+/bin/sh /etc/rc.d/ldconfig start
+
+stamp=/var/db/stepbsd/caches
+[ -e "$stamp" ] && exit 0
+
+PATH=/usr/local/bin:/usr/bin:/bin
+command -v fc-cache >/dev/null && fc-cache -s
+command -v update-mime-database >/dev/null && update-mime-database /usr/local/share/mime
+command -v glib-compile-schemas >/dev/null && glib-compile-schemas /usr/local/share/glib-2.0/schemas
+command -v gdk-pixbuf-query-loaders >/dev/null && gdk-pixbuf-query-loaders --update-cache
+command -v update-desktop-database >/dev/null && update-desktop-database -q
+
+mkdir -p "${stamp%/*}"
+: > "$stamp"

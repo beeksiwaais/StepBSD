@@ -23,8 +23,11 @@ The [continuous release](https://github.com/beeksiwaais/StepBSD/releases/tag/con
 is rebuilt every week and on every change. Each build has been installed to a
 disk and booted in CI before it is published.
 
-- `StepBSD-amd64-<date>.iso`: live and installer ISO.
-- `StepBSD-amd64-<date>.img.zip`: the installed system as a raw disk image.
+| | amd64 | arm64 |
+|---|---|---|
+| For | x86-64 PCs and VMs (BIOS or UEFI) | UEFI arm64 machines and VMs (Apple Silicon under QEMU/UTM, Arm servers) |
+| Live + installer ISO | `StepBSD-amd64-<date>.iso` | `StepBSD-arm64-<date>.iso` |
+| Installed disk image | `StepBSD-amd64-<date>.img.zip` | `StepBSD-arm64-<date>.img.zip` |
 
 ### Try it in a VM
 
@@ -36,22 +39,32 @@ qemu-system-x86_64 -machine q35 -accel kvm -cpu host -m 4096 -smp 2 \
   -drive file=stepbsd.qcow2,if=virtio -nic user,model=e1000
 ```
 
-(On macOS use `-accel hvf` on an Intel Mac. Apple Silicon has to emulate
-x86-64 with `-accel tcg`, which is slow.)
+On Apple Silicon, use the arm64 ISO, which runs at native speed with HVF:
+
+```sh
+qemu-img create -f qcow2 stepbsd.qcow2 20G
+qemu-system-aarch64 -machine virt -accel hvf -cpu host -m 4096 -smp 4 \
+  -bios "$(brew --prefix qemu)/share/qemu/edk2-aarch64-code.fd" \
+  -drive file=StepBSD-arm64-*.iso,format=raw,if=none,id=cd0,media=cdrom \
+  -device virtio-scsi-pci -device scsi-cd,drive=cd0,bootindex=0 \
+  -drive file=stepbsd.qcow2,if=virtio \
+  -device virtio-gpu-pci -device qemu-xhci -device usb-kbd -device usb-tablet \
+  -netdev user,id=net0 -device virtio-net-pci,netdev=net0,romfile=
+```
 
 ### Install on a PC
 
 1. Write the ISO to a USB stick: `dd if=StepBSD-amd64-<date>.iso of=/dev/<stick> bs=1m`.
 2. Boot it. The live system logs `admin` in (no password) and starts the
    desktop.
-3. Open Terminal.app and run:
+3. Open Terminal (in the dock on the right) and run:
 
    ```sh
    sudo stepbsd-install
    ```
 
    Pick the target disk and type `yes`. **The whole disk is erased.** It is
-   partitioned GPT with BIOS boot code, an EFI system partition and a UFS
+   partitioned GPT with BIOS boot code (amd64), an EFI system partition and a UFS
    root labelled `ROOTFS`, the layout of NextBSD's disk image. The root
    grows to fill the disk.
 4. Remove the stick and reboot.
@@ -61,6 +74,10 @@ powers off).
 
 ## Using it
 
+- The desktop is Window Maker with GWorkspace, the GNUstep Workspace
+  Manager, which draws the desktop and the file viewers. The dock on the right
+  holds GWorkspace, Terminal, SystemPreferences, Preview and xterm; every
+  GNUstep application is in `/usr/local/GNUstep/System/Applications`.
 - The desktop starts by itself on the first virtual console. `touch
   ~/.stepbsd-nodesktop` turns that off; `startstep` starts it by hand.
   `~/.xsession` replaces the session.
@@ -78,18 +95,20 @@ root, then sources [`stepbsd/layer.sh`](stepbsd/layer.sh). The layer:
 
 1. installs [`stepbsd/packages.txt`](stepbsd/packages.txt) from FreeBSD's
    package repository;
-2. removes [`stepbsd/prune.txt`](stepbsd/prune.txt), about 1 GiB of
+2. removes [`stepbsd/prune.txt`](stepbsd/prune.txt), about 780 MiB of
    ImageMagick build and Python dependencies the desktop never loads. A
    shared-library closure check before and after fails the build if pruning
    removes a library anything still needs;
 3. lays [`stepbsd/overlay/`](stepbsd/overlay) onto the root: the installer,
-   the X session, and launchd jobs for `gdomap` and the linker hints;
-4. builds the linker hints and the font, MIME and GLib caches in a chroot.
+   the X session, and launchd jobs for `gdomap` and for the linker hints and
+   caches;
+4. builds the linker hints and the font, MIME and GLib caches in a chroot
+   (amd64). The cross-built arm64 image builds them on its first boot.
 
 `build.sh` then makes the disk image and the live ISO exactly as NextBSD does.
 
 ```sh
-# on FreeBSD 15.1 (amd64), as root:
+# on FreeBSD 15.1 (amd64), as root; ARCH=arm64 cross-builds the arm64 image:
 pkg install -y git zip
 DIST_NAME=StepBSD ARCH=amd64 sh build.sh      # -> out/StepBSD-amd64-*.{iso,img}.zip
 sh tests/stepbsd-install-test.sh out/StepBSD-amd64-*.iso.zip   # needs qemu + expect
@@ -97,11 +116,13 @@ sh tests/stepbsd-install-test.sh out/StepBSD-amd64-*.iso.zip   # needs qemu + ex
 
 ### CI and maintenance
 
-- [`stepbsd.yml`](.github/workflows/stepbsd.yml) builds the ISO, runs
+- [`stepbsd.yml`](.github/workflows/stepbsd.yml) builds the amd64 and arm64
+  ISOs, runs
   [`tests/stepbsd-install-test.sh`](tests/stepbsd-install-test.sh) and
-  publishes `continuous`. The test installs to a disk from the live ISO, boots
-  the installed system with BIOS, checks GNUstep at run time, then boots it
-  with UEFI and checks a screenshot of the desktop. It runs on every push and
+  publishes `continuous`. On a runner of each architecture, the test installs
+  to a disk from the live ISO, boots the installed system (amd64: BIOS; arm64:
+  UEFI), checks GNUstep at run time, then boots it with UEFI and checks a
+  screenshot of the desktop. It runs on every push and
   PR, and every Monday so new NextBSD and FreeBSD packages get picked up.
 - [`sync-upstream.yml`](.github/workflows/sync-upstream.yml) merges
   nextbsd/nextbsd into `sync/upstream` every Monday, builds and tests it, and

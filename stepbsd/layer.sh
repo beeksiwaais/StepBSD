@@ -89,7 +89,7 @@ chown -R 0:0 "$RF/System/Library/LaunchDaemons"
 chmod 0644 "$RF"/System/Library/LaunchDaemons/org.stepbsd.*.plist \
            "$RF"/System/Library/LaunchDaemons/org.gnustep.*.plist
 chmod 0555 "$RF/usr/local/bin/startstep" "$RF/usr/local/sbin/stepbsd-install" \
-           "$RF/usr/local/libexec/stepbsd/xsession"
+           "$RF/usr/local/libexec/stepbsd/xsession" "$RF/usr/local/libexec/stepbsd/boot"
 
 # Login shells source the StepBSD profile: sh through /etc/profile, zsh (the
 # admin user's shell) through /etc/zprofile in sh emulation.
@@ -108,26 +108,19 @@ if ! grep -q stepbsd "$RF/private/etc/zprofile" 2>/dev/null; then
 PROF
 fi
 
-# 4. Caches a package post-install would build on a live FreeBSD system. Run
-#    natively in a chroot when the rootfs is the build VM's own arch; on a
-#    cross lane the boot-time jobs (ldconfig) cover what matters.
+# 4. Linker hints and the caches a package post-install would build: the
+#    org.stepbsd.boot script, run once in a chroot when the rootfs is the build
+#    VM's own arch. A cross-built (arm64) image runs it on its first boot.
 if [ "$ABIARCH" = "$(uname -p)" ]; then
-    echo "==> [stepbsd] native fixups in chroot"
+    echo "==> [stepbsd] native: linker hints + caches in chroot"
     mkdir -p "$RF/dev"
     mount -t devfs devfs "$RF/dev"
-    chroot "$RF" /bin/sh -c '
-        /bin/sh /etc/rc.d/ldconfig start
-        [ -x /usr/local/bin/fc-cache ] && /usr/local/bin/fc-cache -s
-        [ -x /usr/local/bin/update-mime-database ] && /usr/local/bin/update-mime-database /usr/local/share/mime
-        [ -x /usr/local/bin/glib-compile-schemas ] && /usr/local/bin/glib-compile-schemas /usr/local/share/glib-2.0/schemas
-        [ -x /usr/local/bin/gdk-pixbuf-query-loaders ] && /usr/local/bin/gdk-pixbuf-query-loaders --update-cache
-        [ -x /usr/local/bin/update-desktop-database ] && /usr/local/bin/update-desktop-database -q
-        true
-    ' || echo "WARN: [stepbsd] a chroot fixup failed; boot-time jobs will retry" >&2
+    chroot "$RF" /usr/local/libexec/stepbsd/boot ||
+        echo "WARN: [stepbsd] chroot boot script failed; the first boot retries" >&2
     umount "$RF/dev"
     ls -l "$RF/private/var/run/ld-elf.so.hints" 2>/dev/null || true
 else
-    echo "==> [stepbsd] cross lane: no chroot fixups"
+    echo "==> [stepbsd] cross lane ($ABIARCH): linker hints + caches on first boot"
 fi
 
 echo "==> [stepbsd] installed packages by size (MiB, top 15)"

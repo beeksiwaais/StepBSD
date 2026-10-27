@@ -9,7 +9,8 @@
 #            the live `admin` autologin land, run stepbsd-install onto vtbd0,
 #            add a serial-console loader fragment to the installed root (so
 #            phase `check` can be driven), power off.
-#   check    installed disk (BIOS boot: pmbr + gptboot): verify the root,
+#   check    installed disk (amd64: BIOS boot, pmbr + gptboot; arm64: UEFI):
+#            verify the root,
 #            GNUstep at run time and the launchd jobs, remove the serial
 #            fragment again (so phase `gui` boots like a real machine), power
 #            off.
@@ -132,7 +133,9 @@ switch -- $phase {
         # gnustep-base works: write and read back a user default.
         must ". /usr/local/GNUstep/System/Library/Makefiles/GNUstep.sh && defaults write StepBSDTest probe 42 && defaults read StepBSDTest probe | grep -qw 42"
         must "launchctl list | grep -q org.gnustep.gdomap"
-        must "launchctl list | grep -q org.stepbsd.ldconfig"
+        must "launchctl list | grep -q org.stepbsd.boot"
+        # The boot job has built the caches (at image build, or first boot).
+        must "i=0; until test -e /var/db/stepbsd/caches || \[ \$i -ge 60 \]; do sleep 5; i=\$((i+1)); done; test -e /var/db/stepbsd/caches" 360
         must "test -s /var/run/ld-elf.so.hints && ldconfig -r | grep -q GNUstep"
         must "$sudo rm /boot/loader.conf.d/zz-ci-serial.conf"
         power_off
