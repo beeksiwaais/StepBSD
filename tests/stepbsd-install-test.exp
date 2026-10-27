@@ -1,0 +1,146 @@
+#!/usr/bin/expect -f
+#
+# stepbsd-install-test.exp — drive one phase of tests/stepbsd-install-test.sh
+# over the serial console.
+#
+# usage: stepbsd-install-test.exp <harness-dir> <phase> qemu-system-x86_64 <args...>
+#
+#   install  live ISO (UEFI): interrupt the loader for a serial console, let
+#            the live `admin` autologin land, run stepbsd-install onto vtbd0,
+#            add a serial-console loader fragment to the installed root (so
+#            phase `check` can be driven), power off.
+#   check    installed disk (BIOS boot: pmbr + gptboot): verify the root,
+#            GNUstep at run time and the launchd jobs, remove the serial
+#            fragment again (so phase `gui` boots like a real machine), power
+#            off.
+#
+# Loader handling comes from the nextbsd-ci harness (patterns.tcl,
+# loader.exp.inc) at the tag tests/stepbsd-install-test.sh pins.
+
+set harness [lindex $argv 0]
+set phase   [lindex $argv 1]
+set qemu    [lrange $argv 2 end]
+
+source "$harness/patterns.tcl"
+source "$harness/loader.exp.inc"
+
+log_user 1
+set timeout 600
+
+proc fail {msg} {
+    puts "\nSTEPBSD-TEST-FAIL: $msg"
+    exit 1
+}
+
+# Wait for the session the console getty gives us: NextBSD logs the
+# password-less `admin` in automatically; fall back to typing the name.
+proc await_shell {secs} {
+    global timeout re_panic re_session_msg
+    set timeout $secs
+    expect {
+        timeout { fail "no login session within ${secs}s" }
+        -re $re_panic { fail "kernel panic" }
+        -re $re_session_msg { }
+        "login:" { send "admin\r"; exp_continue }
+        "Password:" { send "\r"; exp_continue }
+    }
+    sleep 3
+    set timeout 60
+    send "\r"
+    send "echo STEP-READY-\$((40+2))\r"
+    expect {
+        timeout { fail "shell did not answer" }
+        "STEP-READY-42" { }
+    }
+}
+
+# Run a command line in the guest shell, return its exit status. The marker
+# is matched only with a number after it, so the echoed command line (which
+# carries the literal $?) never matches.
+set n 0
+proc run {cmd {secs 120}} {
+    global timeout n
+    incr n
+    set timeout $secs
+    sleep 0.3
+    expect *
+    send -- "$cmd; echo STEP-RC-$n=\$?\r"
+    expect {
+        timeout { fail "timed out after ${secs}s: $cmd" }
+        -re "STEP-RC-$n=(\[0-9\]+)" { return $expect_out(1,string) }
+    }
+}
+
+proc must {cmd {secs 120}} {
+    set rc [run $cmd $secs]
+    if {$rc != 0} { fail "exit $rc: $cmd" }
+    puts "\nSTEPBSD-TEST-OK: $cmd"
+}
+
+proc power_off {} {
+    global timeout
+    send -- "echo | sudo -S -p '' poweroff\r"
+    set timeout 180
+    expect {
+        timeout { fail "guest did not power off" }
+        eof { }
+    }
+    puts "\nSTEPBSD-TEST-OK: powered off"
+}
+
+set sudo "echo | sudo -S -p ''"
+
+spawn {*}$qemu
+
+switch -- $phase {
+    install {
+        loader_prompt 120
+        loader_set "set console=comconsole"
+        loader_set "set boot_serial=YES"
+        loader_set "set comconsole_speed=115200"
+        loader_set "set boot_mutemsgs=NO"
+        loader_boot "boot -v"
+        await_shell 600
+
+        must "cat /etc/os-release | grep -q '^NAME=\"StepBSD\"'"
+        must "test -x /usr/local/sbin/stepbsd-install"
+        must "$sudo /usr/local/sbin/stepbsd-install -y -d vtbd0" 1800
+        must "$sudo gpart show -l vtbd0"
+        must "$sudo mount /dev/ufs/ROOTFS /mnt"
+        must "$sudo sh -c 'printf \"console=\\\"comconsole,vidconsole\\\"\\nboot_multicons=\\\"YES\\\"\\nboot_serial=\\\"YES\\\"\\ncomconsole_speed=\\\"115200\\\"\\nboot_mutemsgs=\\\"NO\\\"\\n\" > /mnt/boot/loader.conf.d/zz-ci-serial.conf'"
+        must "$sudo umount /mnt"
+        power_off
+    }
+    check {
+        await_shell 600
+
+        must "grep -q '^NAME=\"StepBSD\"' /etc/os-release"
+        # Root is the installed disk, grown past the 1.5 GiB-headroom image size.
+        must "mount -p | awk '\$2 == \"/\"' | grep -q '^/dev/ufs/ROOTFS'"
+        must "df -k / | awk 'NR == 2 { exit !(\$2 > 8 * 1024 * 1024) }'"
+        must "pkg info -e gnustep-base && pkg info -e gnustep-gui && pkg info -e gnustep-back && pkg info -e windowmaker && pkg info -e gworkspace && pkg info -e xlibre-server"
+        # Every library the desktop's programs need resolves at run time.
+        foreach prog {
+            /usr/local/GNUstep/System/Applications/GWorkspace.app/GWorkspace
+            /usr/local/GNUstep/System/Applications/SystemPreferences.app/SystemPreferences
+            /usr/local/GNUstep/System/Applications/Terminal.app/Terminal
+            /usr/local/bin/wmaker
+            /usr/local/bin/Xorg
+        } {
+            must "test -x $prog && ! ldd $prog | grep 'not found'"
+        }
+        # gnustep-base works: write and read back a user default.
+        must ". /usr/local/GNUstep/System/Library/Makefiles/GNUstep.sh && defaults write StepBSDTest probe 42 && defaults read StepBSDTest probe | grep -qw 42"
+        must "launchctl list | grep -q org.gnustep.gdomap"
+        must "launchctl list | grep -q org.stepbsd.ldconfig"
+        must "test -s /var/run/ld-elf.so.hints && ldconfig -r | grep -q GNUstep"
+        must "$sudo rm /boot/loader.conf.d/zz-ci-serial.conf"
+        power_off
+    }
+    default {
+        fail "unknown phase $phase"
+    }
+}
+
+puts "\nSTEPBSD-TEST-PASS: $phase"
+exit 0

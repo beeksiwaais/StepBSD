@@ -1,0 +1,17 @@
+# Packages removed (pkg delete -f, dependents kept) after stepbsd/packages.txt
+# is installed. They arrive only as build-time or Python-binding dependencies
+# of ImageMagick7 (windowmaker -> ImageMagick7 -> Imath -> py312-numpy ->
+# gcc14/openblas/binutils, Imath -> boost-libs) and nothing on the desktop
+# loads them. Together they are ~1 GiB of the image.
+#
+# layer.sh re-runs a shared-library closure check over the whole rootfs after
+# pruning and FAILS the build if any ELF object loses a NEEDED library, so a
+# wrong entry here cannot ship silently.
+#
+# `pkg upgrade` on an installed system may pull these back in as missing
+# dependencies; that costs disk space, nothing else.
+py312-numpy
+gcc14
+binutils
+openblas
+boost-libs

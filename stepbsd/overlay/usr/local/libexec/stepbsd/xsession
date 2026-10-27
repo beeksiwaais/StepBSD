@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# The StepBSD X session: Window Maker as the window manager, GWorkspace as the
+# GNUstep Workspace Manager. Run by startstep through startx; ~/.xsession, if
+# present and executable, replaces it entirely.
+
+if [ -x "$HOME/.xsession" ]; then
+	exec "$HOME/.xsession"
+fi
+
+. /usr/local/GNUstep/System/Library/Makefiles/GNUstep.sh
+
+# Session output goes where Window Maker's own crash logs would look for it.
+mkdir -p "$HOME/GNUstep/Library/Logs"
+exec >"$HOME/GNUstep/Library/Logs/xsession.log" 2>&1
+
+/usr/local/bin/xsetroot -solid '#505075'
+
+# First login: give the user Window Maker's stock defaults, then the StepBSD
+# ones (GWorkspace owns the desktop icons, so Window Maker shows none).
+if [ ! -f "$HOME/GNUstep/Defaults/WindowMaker" ]; then
+	/usr/local/bin/wmaker.inst --batch
+	/usr/local/bin/wdwrite WindowMaker DisableMiniwindows NO
+fi
+if [ ! -f "$HOME/GNUstep/Defaults/.stepbsd" ]; then
+	defaults write NSGlobalDomain GSWorkspaceApplication GWorkspace
+	defaults write GWorkspace desktop YES
+	defaults write GWorkspace uses_thumbnails YES
+	: >"$HOME/GNUstep/Defaults/.stepbsd"
+fi
+
+# GWorkspace once the window manager is up to manage its windows.
+( sleep 2; exec openapp GWorkspace ) &
+
+exec /usr/local/bin/wmaker

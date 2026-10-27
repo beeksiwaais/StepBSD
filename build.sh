@@ -46,6 +46,8 @@ set -eu
 
 : "${FREEBSD_VERSION:=15.1}"
 : "${LABEL:=NEXTBSD}"
+# StepBSD: the published artifacts are named ${DIST_NAME}-<arch>-<date>.
+: "${DIST_NAME:=StepBSD}"
 ARCH_EXPLICIT=${ARCH:+yes}
 ARCH=${ARCH:-amd64}
 # UTC build timestamp — the SINGLE source of truth for the version: CI passes
@@ -357,6 +359,9 @@ if [ -f "$ROOT/pkglist.txt" ]; then
     fi
 fi
 
+# StepBSD: the GNUstep desktop layer (sourced; see stepbsd/layer.sh).
+. "$ROOT/stepbsd/layer.sh"
+
 # ---------------------------------------------------------------------------
 # 5b. Drop pkg's build residue before makefs bakes the tree in. Two separate
 #     things accumulate in the rootfs, and neither is needed at runtime:
@@ -423,6 +428,8 @@ echo "NextBSD ${IMG_DATE}"
 NBV
     chmod 0555 "$RF/bin/nextbsd-version"
 fi
+# StepBSD: brand the image (defined by stepbsd/layer.sh; artifacts mode skips it).
+if command -v stepbsd_identity >/dev/null 2>&1; then stepbsd_identity; fi
 
 # Retire the kld* user CLIs (#193, Apple-shape): macOS ships kextload/kextstat,
 # not kldload — only the CLI front-ends go; the kld*(2) syscalls stay, and
@@ -888,7 +895,7 @@ echo "==> mkimg: GPT disk image"
 # NextBSD-branded, datestamped image name — identical to the published
 # continuous asset, so the build output is uploaded + published as-is
 # (no rename). img-boot-test.sh discovers the member by its .img extension.
-IMG_NAME="NextBSD-${ARCH}-${IMG_DATE}.img"
+IMG_NAME="${DIST_NAME}-${ARCH}-${IMG_DATE}.img"
 # BIOS boot blocks (pmbr/gptboot) only exist on amd64; arm64 is UEFI-only, so
 # fall back to an ESP-only GPT there (same arch split the installer uses).
 if [ -f "$WORK/rootfs/boot/pmbr" ] && [ -f "$WORK/rootfs/boot/gptboot" ]; then
@@ -1158,7 +1165,7 @@ cp "$WORK/rootfs.uzip" "$ISOROOT/rootfs.uzip"
 
 # 7e. Build the bootable cd9660 (BIOS cdboot + UEFI ESP) via the release script
 #     (extracted from src.txz at step 3a; lands under usr/src/ — locate by glob).
-ISO_NAME="NextBSD-${ARCH}-${IMG_DATE}.iso"
+ISO_NAME="${DIST_NAME}-${ARCH}-${IMG_DATE}.iso"
 # amd64 gets BIOS (El Torito cdboot) + UEFI; arm64 is UEFI-only, same split as
 # the GPT disk image above.
 echo "==> mkisoimages.sh: bootable cd9660 ($([ -f "$ISOROOT/boot/cdboot" ] && echo 'BIOS + UEFI' || echo 'UEFI-only'))"

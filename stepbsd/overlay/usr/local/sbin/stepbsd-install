@@ -1,0 +1,183 @@
+#!/bin/sh
+#
+# stepbsd-install — install StepBSD from the live ISO onto a disk.
+#
+# The live system's read-only lower root is a compact UFS image: rootfs.uzip on
+# the ISO, which the live init vnode-backs as md1 and geom_uzip decompresses on
+# read as /dev/md1.uzip. build.sh makes that image and the GPT disk image from
+# the same staged tree, so an install is the disk image rebuilt in place:
+#
+#   1. GPT with the same partitions and labels build.sh gives the .img:
+#      freebsd-boot "bootfs" (amd64: pmbr + gptboot for BIOS), efi "efiboot0"
+#      (loader at the UEFI removable-media path), freebsd-ufs "ROOTFS".
+#   2. dd the live root image onto the freebsd-ufs partition.
+#   3. tunefs: UFS label ROOTFS (the kernel's baked-in
+#      ROOTDEVNAME=ufs:/dev/ufs/ROOTFS) and soft updates, as the .img has.
+#   4. growfs to fill the partition.
+#
+# Nothing from the live session's writable layer (/cow) is copied: the
+# installed system starts as clean as a freshly written .img.
+#
+# usage: stepbsd-install [-y] [-d disk] [-p]
+#   -d disk   target disk (ada0, nda0, da1, vtbd0, ...); asked for if absent
+#   -y        do not ask for confirmation before erasing the disk
+#   -p        power off when done (unattended installs)
+
+set -eu
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+SRC=/dev/md1.uzip
+MEDIA_LABEL=iso9660/NEXTBSD
+ESP_SIZE=260m
+
+assume_yes=
+disk=
+poweroff_after=
+
+usage() {
+	echo "usage: stepbsd-install [-y] [-d disk] [-p]" >&2
+	exit 64
+}
+
+die() {
+	echo "stepbsd-install: $*" >&2
+	exit 1
+}
+
+while getopts d:yph opt; do
+	case $opt in
+	d) disk=${OPTARG#/dev/} ;;
+	y) assume_yes=1 ;;
+	p) poweroff_after=1 ;;
+	*) usage ;;
+	esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 0 ] || usage
+
+[ "$(id -u)" -eq 0 ] || die "must be run as root (try: sudo stepbsd-install)"
+[ -c "$SRC" ] || die "$SRC not found; run this from the StepBSD live ISO"
+
+# The disk the live media was booted from is never offered as a target.
+media_disk=$(glabel status -s 2>/dev/null |
+    awk -v l="$MEDIA_LABEL" '$1 == l { print $3 }' | sed -E 's/(p|s)[0-9]+.*$//')
+
+bytes() {
+	diskinfo "/dev/$1" | awk '{ print $3 }'
+}
+
+human() {
+	awk -v b="$1" 'BEGIN {
+		split("B KiB MiB GiB TiB", u, " "); i = 1
+		while (b >= 1024 && i < 5) { b /= 1024; i++ }
+		printf("%.1f %s", b, u[i])
+	}'
+}
+
+describe() {
+	geom disk list "$1" 2>/dev/null | awk -F': ' '/^ *descr:/ { print $2; exit }'
+}
+
+candidates() {
+	for d in $(sysctl -n kern.disks); do
+		case $d in cd*|md*) continue ;; esac
+		[ "$d" = "$media_disk" ] && continue
+		echo "$d"
+	done | sort
+}
+
+src_bytes=$(bytes "${SRC#/dev/}")
+# boot blocks + ESP + alignment slack on top of the root image itself.
+need_bytes=$((src_bytes + 300 * 1024 * 1024))
+
+if [ -z "$disk" ]; then
+	list=$(candidates)
+	[ -n "$list" ] || die "no disk found to install to"
+	echo
+	echo "StepBSD installer"
+	echo "================="
+	echo
+	echo "Disks:"
+	i=0
+	for d in $list; do
+		i=$((i + 1))
+		printf "  %d) %-8s %10s  %s\n" "$i" "$d" "$(human "$(bytes "$d")")" "$(describe "$d")"
+	done
+	echo
+	printf "Install to which disk? [1-%d, q to quit] " "$i"
+	read -r answer
+	case $answer in
+	q|Q|"") echo "Nothing done."; exit 0 ;;
+	esac
+	disk=$(echo "$list" | sed -n "${answer}p")
+	[ -n "$disk" ] || die "no such choice: $answer"
+fi
+
+[ -c "/dev/$disk" ] || die "/dev/$disk: no such disk"
+[ "$disk" != "$media_disk" ] || die "$disk holds the live media; pick another disk"
+disk_bytes=$(bytes "$disk")
+[ "$disk_bytes" -ge "$need_bytes" ] ||
+    die "$disk is $(human "$disk_bytes"); StepBSD needs at least $(human "$need_bytes")"
+
+if [ -z "$assume_yes" ]; then
+	echo
+	echo "ALL DATA ON $disk ($(human "$disk_bytes") $(describe "$disk")) WILL BE ERASED."
+	printf "Type 'yes' to install StepBSD on %s: " "$disk"
+	read -r answer
+	[ "$answer" = yes ] || { echo "Nothing done."; exit 0; }
+fi
+
+# Partition and file system devices are named from gpart's "<prov> added".
+add_part() {
+	gpart add "$@" "$disk" | awk '{ print $1 }'
+}
+
+echo "==> partitioning $disk (GPT)"
+gpart destroy -F "$disk" >/dev/null 2>&1 || true
+gpart create -s gpt "$disk" >/dev/null
+
+if [ -f /boot/pmbr ] && [ -f /boot/gptboot ]; then
+	add_part -t freebsd-boot -s 512k -l bootfs >/dev/null
+	gpart bootcode -b /boot/pmbr -p /boot/gptboot -i 1 "$disk" >/dev/null
+	echo "    BIOS boot code installed"
+fi
+
+esp=$(add_part -t efi -a 1m -s "$ESP_SIZE" -l efiboot0)
+root=$(add_part -t freebsd-ufs -a 1m -l ROOTFS)
+[ -c "/dev/$esp" ] && [ -c "/dev/$root" ] || die "partitioning $disk failed"
+
+echo "==> EFI system partition /dev/$esp"
+newfs_msdos -F 32 -c 1 -L EFISYS "/dev/$esp" >/dev/null
+espmnt=$(mktemp -d /tmp/stepbsd-esp.XXXXXX)
+mount -t msdosfs "/dev/$esp" "$espmnt"
+mkdir -p "$espmnt/EFI/BOOT"
+case $(uname -m) in
+arm64|aarch64) efiname=BOOTAA64.EFI ;;
+*)             efiname=BOOTX64.EFI ;;
+esac
+loader=/boot/loader_lua.efi
+[ -f "$loader" ] || loader=/boot/loader.efi
+cp "$loader" "$espmnt/EFI/BOOT/$efiname"
+umount "$espmnt"
+rmdir "$espmnt"
+echo "    $(basename "$loader") -> /EFI/BOOT/$efiname"
+
+echo "==> copying the system to /dev/$root ($(human "$src_bytes"))"
+dd if="$SRC" of="/dev/$root" bs=1m status=progress
+sync
+
+echo "==> root file system: label ROOTFS, soft updates, grow to fill $root"
+tunefs -L ROOTFS -n enable "/dev/$root" >/dev/null
+growfs -y "/dev/$root" >/dev/null
+fsck_ffs -p "/dev/$root" >/dev/null
+
+echo
+echo "StepBSD is installed on $disk."
+echo "Remove the installation media and reboot."
+
+if [ -n "$poweroff_after" ]; then
+	echo "Powering off."
+	poweroff
+fi

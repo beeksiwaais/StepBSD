@@ -1,0 +1,185 @@
+name: StepBSD ISO
+
+# Builds the StepBSD live/installer ISO (NextBSD + the GNUstep desktop),
+# tests it end to end in qemu (install to disk, BIOS + UEFI boot of the
+# installed system, desktop screenshot) and publishes it to the rolling
+# `continuous` release.
+#
+# The weekly schedule is what keeps a StepBSD image current without a commit:
+# every build installs the latest NextBSD packages (nextbsd-pkg) and the latest
+# FreeBSD GNUstep/X packages (pkg.FreeBSD.org .../latest).
+#
+# Upstream's own build.yml (NextBSD's images) is disabled in this repository.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'docs/**'
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stepbsd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    outputs:
+      date: ${{ steps.meta.outputs.date }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+
+      - name: compute build date
+        id: meta
+        run: echo "date=$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: build ISO inside FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '15.1'
+          mem: 8192
+          cpu: 4
+          usesh: true
+          sync: rsync
+          copyback: true
+          prepare: |
+            pkg install -y bash git rsync zip
+          run: |
+            set -eu
+            export FREEBSD_VERSION=15.1 ARCH=amd64 ASSEMBLY=pkg DIST_NAME=StepBSD
+            export IMG_DATE=${{ steps.meta.outputs.date }}
+            sh build.sh
+            # Only out/ needs to come back to the runner; the staged rootfs
+            # is several GiB.
+            chflags -R noschg work 2>/dev/null || true
+            rm -rf work distfiles
+
+      - name: unpack the ISO, checksums
+        run: |
+          set -eu
+          D=${{ steps.meta.outputs.date }}
+          cd out
+          unzip -o "StepBSD-amd64-$D.iso.zip"
+          rm "StepBSD-amd64-$D.iso.zip"
+          sha256sum "StepBSD-amd64-$D.iso" > "StepBSD-amd64-$D.iso.sha256"
+          sha256sum "StepBSD-amd64-$D.img.zip" > "StepBSD-amd64-$D.img.zip.sha256"
+          ls -lh
+          {
+            echo "### StepBSD amd64 $D"
+            echo
+            echo '```'
+            ls -lh
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StepBSD-amd64-${{ steps.meta.outputs.date }}
+          path: out/
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+  install-test:
+    name: install test (amd64)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: StepBSD-amd64-${{ needs.build.outputs.date }}
+          path: out/
+
+      - name: install qemu + expect
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf expect
+
+      - name: install, boot and desktop test
+        run: sh tests/stepbsd-install-test.sh out/StepBSD-amd64-*.iso
+
+      - name: upload test logs and screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-test-${{ needs.build.outputs.date }}
+          path: |
+            tests/out/*.log
+            tests/out/*.png
+          retention-days: 14
+          if-no-files-found: ignore
+
+  release:
+    name: publish continuous
+    needs: [build, install-test]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: StepBSD-amd64-${{ needs.build.outputs.date }}
+          path: out/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: install-test-${{ needs.build.outputs.date }}
+          path: test/
+
+      - name: publish to the continuous release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          D: ${{ needs.build.outputs.date }}
+        run: |
+          set -eu
+          cp test/desktop.png "out/StepBSD-amd64-$D-desktop.png" 2>/dev/null || true
+          cat > notes.md <<NOTES
+          Rolling StepBSD build **$D** from \`${GITHUB_SHA}\`: NextBSD (launchd, Mach,
+          Darwin userland) with the GNUstep desktop (Window Maker + GWorkspace).
+
+          - \`StepBSD-amd64-$D.iso\`: live and installer ISO (BIOS + UEFI). Write
+            it to a USB stick or boot it in a VM. It logs \`admin\` in and starts the
+            desktop. Run \`sudo stepbsd-install\` in Terminal to install to disk.
+          - \`StepBSD-amd64-$D.img.zip\`: a ready-installed raw disk image for VMs.
+
+          CI installed this ISO to a disk in qemu, booted the installed system with
+          BIOS and with UEFI, and checked GNUstep at run time. The screenshot is the
+          desktop from that run.
+          NOTES
+          gh release view continuous >/dev/null 2>&1 ||
+            gh release create continuous --title "StepBSD continuous" --notes "first build" --prerelease
+          # Replace every asset of the previous build.
+          for a in $(gh release view continuous --json assets --jq '.assets[].name'); do
+            gh release delete-asset continuous "$a" --yes
+          done
+          gh release upload continuous out/* --clobber
+          gh release edit continuous --title "StepBSD continuous $D" --notes-file notes.md --prerelease
+          git tag -f continuous "$GITHUB_SHA"
+          git push -f origin refs/tags/continuous

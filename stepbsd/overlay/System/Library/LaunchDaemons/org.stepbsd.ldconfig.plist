@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.stepbsd.ldconfig
+
+  Rebuild the run-time linker hints once per boot. NextBSD runs no rc.d at
+  boot, and the GNUstep packages put their libraries in directories rtld's
+  default path does not cover (/usr/local/GNUstep/System/Library/Libraries
+  and others listed in /usr/local/libdata/ldconfig/). /etc/rc.d/ldconfig
+  (NextBSD-userland) builds the same list a package post-install does.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.stepbsd.ldconfig</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>/etc/rc.d/ldconfig</string>
+        <string>start</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

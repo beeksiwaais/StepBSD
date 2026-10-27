@@ -34,6 +34,9 @@ jobs:
   # force-push always build.
   changes:
     name: changes (decide whether to rebuild)
+    # StepBSD: NextBSD's own images are built only upstream; this fork builds
+    # StepBSD with stepbsd.yml. Every other job here needs this one.
+    if: github.repository == 'nextbsd/nextbsd'
     runs-on: ubuntu-latest
     outputs:
       build_needed: ${{ steps.detect.outputs.build_needed }}
