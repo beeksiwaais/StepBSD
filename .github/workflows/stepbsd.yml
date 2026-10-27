@@ -44,7 +44,9 @@ jobs:
   # is three jobs in a chain, in build-desktop.sh's order: the core libraries,
   # then gnustep-gui/-back/libs-av, then the Gershwin applications; each saves
   # the build root (package.sh SAVE_ROOT) for the next (RESTORE_ROOT), and the
-  # last checks and packages it. amd64 runs the same chain, quickly.
+  # last checks and packages it. amd64 runs the same chain, quickly. The build
+  # runs over ssh in the VM vmactions starts; the saved roots travel by scp,
+  # outside the workspace vmactions syncs.
   desktop-1:
     name: desktop 1/3 (${{ matrix.arch }})
     runs-on: ubuntu-latest
@@ -60,7 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: build the core libraries inside FreeBSD VM
+      - name: start the FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
           release: '15.1'
@@ -69,22 +71,31 @@ jobs:
           cpu: 4
           usesh: true
           sync: rsync
-          copyback: true
+          copyback: false
           prepare: |
             pkg install -y git rsync
           run: |
-            set -eu
-            export WORKDIR=/var/tmp/stepbsd-desktop
-            mkdir -p desktop-state
-            SAVE_ROOT=$PWD/desktop-state/root-1.tar.zst sh stepbsd/desktop/package.sh stepbsd-packages \
-              gershwin-system gershwin-assets swift-corelibs-libdispatch tools-make libobjc2 libs-base
-            chflags -R noschg /var/tmp/stepbsd-desktop 2>/dev/null || true
-            rm -rf /var/tmp/stepbsd-desktop
+            true
+
+      - name: build the core libraries in the VM
+        run: |
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=60 freebsd \
+            "cd $GITHUB_WORKSPACE && export WORKDIR=/var/tmp/stepbsd-desktop && \
+             SAVE_ROOT=/var/tmp/root-1.tar.zst sh stepbsd/desktop/package.sh stepbsd-packages gershwin-system gershwin-assets swift-corelibs-libdispatch tools-make libobjc2 libs-base"
+
+      - name: fetch the build root from the VM
+        run: |
+          mkdir -p /tmp/desktop-out
+          for i in 1 2 3; do
+            scp -o ServerAliveInterval=30 freebsd:/var/tmp/root-1.tar.zst /tmp/desktop-out/ && exit 0
+            sleep 15
+          done
+          exit 1
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-root-${{ matrix.arch }}-1
-          path: desktop-state/root-1.tar.zst
+          path: /tmp/desktop-out/root-1.tar.zst
           compression-level: 0
           retention-days: 2
           if-no-files-found: error
@@ -105,12 +116,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Outside the workspace: vmactions' rsync of the workspace into the
+      # emulated arm64 VM broke on this half-gigabyte file; scp moves it.
       - uses: actions/download-artifact@v4
         with:
           name: desktop-root-${{ matrix.arch }}-1
-          path: desktop-state/
+          path: /tmp/desktop-state
 
-      - name: build gnustep-gui, -back and libs-av inside FreeBSD VM
+      - name: start the FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
           release: '15.1'
@@ -119,22 +132,39 @@ jobs:
           cpu: 4
           usesh: true
           sync: rsync
-          copyback: true
+          copyback: false
           prepare: |
             pkg install -y git rsync
           run: |
-            set -eu
-            export WORKDIR=/var/tmp/stepbsd-desktop
-            RESTORE_ROOT=$PWD/desktop-state/root-1.tar.zst SAVE_ROOT=$PWD/desktop-state/root-2.tar.zst \
-              sh stepbsd/desktop/package.sh stepbsd-packages libs-gui libs-back plistupdate libs-av
-            rm desktop-state/root-1.tar.zst
-            chflags -R noschg /var/tmp/stepbsd-desktop 2>/dev/null || true
-            rm -rf /var/tmp/stepbsd-desktop
+            true
+
+      - name: send the build root to the VM
+        run: |
+          for i in 1 2 3; do
+            scp -o ServerAliveInterval=30 /tmp/desktop-state/root-1.tar.zst freebsd:/var/tmp/ && exit 0
+            sleep 15
+          done
+          exit 1
+
+      - name: build gnustep-gui, -back and libs-av in the VM
+        run: |
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=60 freebsd \
+            "cd $GITHUB_WORKSPACE && export WORKDIR=/var/tmp/stepbsd-desktop && \
+             RESTORE_ROOT=/var/tmp/root-1.tar.zst SAVE_ROOT=/var/tmp/root-2.tar.zst sh stepbsd/desktop/package.sh stepbsd-packages libs-gui libs-back plistupdate libs-av"
+
+      - name: fetch the build root from the VM
+        run: |
+          mkdir -p /tmp/desktop-out
+          for i in 1 2 3; do
+            scp -o ServerAliveInterval=30 freebsd:/var/tmp/root-2.tar.zst /tmp/desktop-out/ && exit 0
+            sleep 15
+          done
+          exit 1
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-root-${{ matrix.arch }}-2
-          path: desktop-state/root-2.tar.zst
+          path: /tmp/desktop-out/root-2.tar.zst
           compression-level: 0
           retention-days: 2
           if-no-files-found: error
@@ -155,12 +185,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Outside the workspace: vmactions' rsync of the workspace into the
+      # emulated arm64 VM broke on this half-gigabyte file; scp moves it.
       - uses: actions/download-artifact@v4
         with:
           name: desktop-root-${{ matrix.arch }}-2
-          path: desktop-state/
+          path: /tmp/desktop-state
 
-      - name: build the Gershwin applications inside FreeBSD VM
+      - name: start the FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
           release: '15.1'
@@ -169,17 +201,30 @@ jobs:
           cpu: 4
           usesh: true
           sync: rsync
-          copyback: true
+          copyback: false
           prepare: |
             pkg install -y git rsync
           run: |
-            set -eu
-            export WORKDIR=/var/tmp/stepbsd-desktop
-            RESTORE_ROOT=$PWD/desktop-state/root-2.tar.zst sh stepbsd/desktop/package.sh stepbsd-packages \
-              gershwin-systempreferences gershwin-workspace gershwin-eau-theme gershwin-terminal gershwin-textedit gershwin-windowmanager gershwin-components
-            rm -rf desktop-state
-            chflags -R noschg /var/tmp/stepbsd-desktop 2>/dev/null || true
-            rm -rf /var/tmp/stepbsd-desktop
+            true
+
+      - name: send the build root to the VM
+        run: |
+          for i in 1 2 3; do
+            scp -o ServerAliveInterval=30 /tmp/desktop-state/root-2.tar.zst freebsd:/var/tmp/ && exit 0
+            sleep 15
+          done
+          exit 1
+
+      - name: build the Gershwin applications in the VM
+        run: |
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=60 freebsd \
+            "cd $GITHUB_WORKSPACE && export WORKDIR=/var/tmp/stepbsd-desktop && \
+             RESTORE_ROOT=/var/tmp/root-2.tar.zst sh stepbsd/desktop/package.sh stepbsd-packages gershwin-systempreferences gershwin-workspace gershwin-eau-theme gershwin-terminal gershwin-textedit gershwin-windowmanager gershwin-components"
+
+      - name: fetch the StepBSD pkg repository from the VM
+        run: |
+          mkdir -p stepbsd-packages
+          scp -o ServerAliveInterval=30 "freebsd:$GITHUB_WORKSPACE/stepbsd-packages/*" stepbsd-packages/
 
       - uses: actions/upload-artifact@v4
         with:
