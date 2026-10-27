@@ -1,0 +1,18 @@
+Origin: NextBSD
+Description: Install the time zone data without group/other write.
+ after-install unpacks NSTimeZones from the archive as root, and root's tar
+ keeps the archive's modes, which are group-writable (0664): every install
+ left /System/Library/Libraries/gnustep-base/.../NSTimeZones/{abbreviations,
+ regions} writable by the wheel group. Drop group and other write after
+ unpacking, as the rest of the installed tree already is.
+
+--- a/NSTimeZones/Makefile.postamble
++++ b/NSTimeZones/Makefile.postamble
+@@ -63,6 +63,7 @@
+ 	fi; \
+ 	rm -rf NSTimeZones; \
+ 	tar -xf $(TIMEZONE_ARCHIVE); \
++	chmod -R go-w NSTimeZones; \
+ 	rm -f $(TIMEZONE_ARCHIVE); \
+ 	if [ -f /tmp/localtime.tmp ]; then \
+ 	  cp /tmp/localtime.tmp NSTimeZones/localtime; \

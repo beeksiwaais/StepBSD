@@ -1,0 +1,239 @@
+Origin: NextBSD
+Description: Menu: build without D-Bus when the system has none.
+ NextBSD ships no D-Bus (E24 D2: GNUstep Distributed Objects, Mach/XPC,
+ launchd and notifyd replace it), and E24 risk 9 notes that Menu.app links
+ libdbus unconditionally and needs an optional build. Menu imports GNUstep
+ applications' menus over Distributed Objects (GNUStepMenuImporter); D-Bus
+ carries only the Canonical AppMenu and GTK menus of GTK/Qt/KDE applications.
+ Without D-Bus, configure now builds those importers as stubs (MENU_NO_DBUS)
+ instead of failing: GNUDBusConnection's +sessionBus returns nil and
+ DBusMenuImporter never connects (and never exits for want of a bus), so
+ MenuProtocolManager runs with the GNUstep importer. The GTK key-label
+ translation, the one gettext user, goes with it, and so does -lintl. With
+ D-Bus present the build is unchanged.
+
+diff -ru a/Menu/DBusConnection.m b/Menu/DBusConnection.m
+--- a/Menu/DBusConnection.m
++++ b/Menu/DBusConnection.m
+@@ -6,6 +6,42 @@
+ 
+ 
+ #import "DBusConnection.h"
++
++#ifdef MENU_NO_DBUS
++
++/* Built without D-Bus (see configure): there is no session bus, so
++ * +sessionBus returns nil and every message its users send it answers
++ * NO/nil/0, which their code already treats as "no D-Bus". */
++@implementation GNUDBusConnection
++
+++ (GNUDBusConnection *)sessionBus { return nil; }
++- (BOOL)connect { return NO; }
++- (void)disconnect { }
++- (BOOL)isConnected { return NO; }
++- (BOOL)registerService:(NSString *)serviceName { return NO; }
++- (BOOL)registerObjectPath:(NSString *)objectPath
++                 interface:(NSString *)interfaceName
++                   handler:(id)handler { return NO; }
++- (id)callMethod:(NSString *)method
++       onService:(NSString *)serviceName
++      objectPath:(NSString *)objectPath
++       interface:(NSString *)interfaceName
++       arguments:(NSArray *)arguments { return nil; }
++- (id)callGTKActivateMethod:(NSString *)actionName
++                  parameter:(NSArray *)parameter
++               platformData:(NSDictionary *)platformData
++                  onService:(NSString *)serviceName
++                 objectPath:(NSString *)objectPath { return nil; }
++- (void)processMessages { }
++- (BOOL)hasPendingMessages { return NO; }
++- (void *)rawConnection { return NULL; }
++- (int)getFileDescriptor { return -1; }
++- (BOOL)sendReply:(void *)reply { return NO; }
++
++@end
++
++#else /* !MENU_NO_DBUS */
++
+ #import <dbus/dbus.h>
+ #import <sys/select.h>
+ #import <unistd.h>
+@@ -970,3 +1006,5 @@
+ }
+ 
+ @end
++
++#endif /* MENU_NO_DBUS */
+diff -ru a/Menu/DBusMenuImporter.m b/Menu/DBusMenuImporter.m
+--- a/Menu/DBusMenuImporter.m
++++ b/Menu/DBusMenuImporter.m
+@@ -13,6 +13,46 @@
+ #import "MenuUtils.h"
+ #import "AppMenuWidget.h"
+ #import "MenuProfiler.h"
++
++#ifdef MENU_NO_DBUS
++
++/* Built without D-Bus (see configure): the Canonical AppMenu importer never
++ * connects, so MenuProtocolManager runs with the GNUstep importer alone
++ * (its protocols may fail individually) and Menu never exits for want of a
++ * session bus. */
++@implementation DBusMenuImporter
++
++- (BOOL)connectToDBus
++{
++    NSDebugLLog(@"gwcomp", @"DBusMenuImporter: built without D-Bus (MENU_NO_DBUS)");
++    return NO;
++}
++- (BOOL)registerService { return NO; }
++- (void)showDBusErrorAndExit { }
++- (BOOL)hasMenuForWindow:(unsigned long)windowId { return NO; }
++- (NSMenu *)getMenuForWindow:(unsigned long)windowId { return nil; }
++- (void)activateMenuItem:(NSMenuItem *)menuItem forWindow:(unsigned long)windowId { }
++- (void)registerWindow:(unsigned long)windowId
++           serviceName:(NSString *)serviceName
++            objectPath:(NSString *)objectPath { }
++- (void)unregisterWindow:(unsigned long)windowId { }
++- (void)scanForExistingMenuServices { }
++- (NSString *)getMenuServiceForWindow:(unsigned long)windowId { return nil; }
++- (NSString *)getMenuObjectPathForWindow:(unsigned long)windowId { return nil; }
++- (NSMenu *)createTestMenu { return nil; }
++- (int)getDBusFileDescriptor { return -1; }
++- (void)processDBusMessages { }
++- (NSUInteger)pendingMessageCount { return 0; }
++- (void)handleDBusMethodCall:(NSDictionary *)callInfo { }
++- (void)handleRegisterWindow:(NSArray *)arguments { }
++- (void)handleUnregisterWindow:(NSArray *)arguments { }
++- (NSString *)handleGetMenuForWindow:(NSArray *)arguments { return nil; }
++- (void)cleanup { }
++
++@end
++
++#else /* !MENU_NO_DBUS */
++
+ #import <dbus/dbus.h>
+ #import <dispatch/dispatch.h>
+ 
+@@ -1102,3 +1142,5 @@
+ }
+ 
+ @end
++
++#endif /* MENU_NO_DBUS */
+diff -ru a/Menu/DBusMenuShortcutParser.m b/Menu/DBusMenuShortcutParser.m
+--- a/Menu/DBusMenuShortcutParser.m
++++ b/Menu/DBusMenuShortcutParser.m
+@@ -8,7 +8,9 @@
+ #import "DBusMenuShortcutParser.h"
+ #import <X11/Xlib.h>
+ #import <X11/keysym.h>
++#ifndef MENU_NO_DBUS
+ #include <libintl.h>
++#endif
+ #include <locale.h>
+ 
+ /* Keysym ranges used to classify numeric shortcut values sent by
+@@ -352,7 +354,12 @@
+         snprintf(msgid, sizeof(msgid), "keyboard label%c%s", '\004', english);
+ 
+         for (NSUInteger d = 0; d < NUM_GTK_TEXT_DOMAINS; d++) {
++#ifndef MENU_NO_DBUS
+             const char *translated = dgettext(gtk_text_domains[d], msgid);
++#else
++            /* No GTK catalogues: GTK menus arrive only over D-Bus. */
++            const char *translated = NULL;
++#endif
+             if (translated == NULL || strcmp(translated, msgid) == 0) {
+                 continue;
+             }
+diff -ru a/Menu/GNUmakefile.in b/Menu/GNUmakefile.in
+--- a/Menu/GNUmakefile.in
++++ b/Menu/GNUmakefile.in
+@@ -150,21 +150,24 @@
+ ifeq ($(UNAME_S),FreeBSD)
+ 	ADDITIONAL_OBJCFLAGS = -Wall -Wextra -O2 -fobjc-runtime=gnustep-2.0 -fobjc-arc -Wno-unused-parameter -D_BSD_SOURCE -I.
+ 	ADDITIONAL_CPPFLAGS = $(DBUS_CFLAGS)
+-	Menu_TOOL_LIBS += -lexecinfo -lintl
++	Menu_TOOL_LIBS += -lexecinfo @INTL_LIBS@
+ endif
+ ifeq ($(UNAME_S),NextBSD)
+ 	ADDITIONAL_OBJCFLAGS = -Wall -Wextra -O2 -fobjc-runtime=gnustep-2.0 -fobjc-arc -Wno-unused-parameter -D_BSD_SOURCE -I.
+ 	ADDITIONAL_CPPFLAGS = $(DBUS_CFLAGS)
+-	Menu_TOOL_LIBS += -lexecinfo -lintl
++	Menu_TOOL_LIBS += -lexecinfo @INTL_LIBS@
+ 	Menu_GUI_LIBS += -L/usr/lib/system
+ 	Menu_LDFLAGS += -Wl,-rpath,/usr/lib/system
+ endif
+ ifeq ($(UNAME_S),OpenBSD)
+ 	ADDITIONAL_OBJCFLAGS = -Wall -Wextra -O2 -fobjc-runtime=gnustep-2.0 -fobjc-arc -Wno-unused-parameter -D_BSD_SOURCE -I.
+ 	ADDITIONAL_CPPFLAGS = $(DBUS_CFLAGS)
+-	Menu_TOOL_LIBS += -L/usr/local/lib -lexecinfo -lintl
++	Menu_TOOL_LIBS += -L/usr/local/lib -lexecinfo @INTL_LIBS@
+ 	Menu_GUI_LIBS += -lc++abi
+ endif
++
++# -DMENU_NO_DBUS when configure found no D-Bus.
++ADDITIONAL_CPPFLAGS += @MENU_CPPFLAGS@
+ 
+ # Profiling: build with  make PROFILE=1  to enable CPU instrumentation.
+ # When enabled, a summary is printed every 10s and on SIGUSR1.
+diff -ru a/Menu/configure b/Menu/configure
+--- a/Menu/configure
++++ b/Menu/configure
+@@ -103,32 +103,24 @@
+ echo "DBUS_CFLAGS: $DBUS_CFLAGS"
+ echo "DBUS_LIBS: $DBUS_LIBS"
+ 
++# Menu imports GNUstep applications' menus over GNUstep Distributed Objects;
++# D-Bus only carries the Canonical AppMenu and GTK menus of GTK/Qt/KDE
++# applications. Without D-Bus, build the D-Bus importers as stubs
++# (MENU_NO_DBUS) instead of failing: on systems that do not ship D-Bus
++# (NextBSD, whose IPC is Mach/XPC, launchd, notifyd and Distributed Objects)
++# Menu still serves every GNUstep application.
++MENU_CPPFLAGS=""
++INTL_LIBS="-lintl"
+ if test_compile "$DBUS_CFLAGS" "$DBUS_LIBS"; then
+     echo "DBUS configuration test passed"
+ else
+-    echo "Error: DBUS is required but not found or not working"
+-    echo ""
+-    case "$OS" in
+-        Linux)
+-            echo "Please install DBUS development package:"
+-            echo "  Ubuntu/Debian: sudo apt-get install libdbus-1-dev"
+-            echo "  Fedora/RHEL:   sudo dnf install dbus-devel"
+-            echo "  Arch Linux:    sudo pacman -S dbus"
+-            ;;
+-        FreeBSD|NextBSD)
+-            echo "Please install DBUS:"
+-            echo "  sudo pkg install dbus"
+-            ;;
+-        OpenBSD)
+-            echo "Please install DBUS:"
+-            echo "  doas pkg_add dbus"
+-            ;;
+-        *)
+-            echo "Please install DBUS development headers and libraries"
+-            ;;
+-    esac
+-    echo ""
+-    exit 1
++    echo "D-Bus not found: building Menu without its D-Bus importers"
++    echo "(GNUstep applications' menus are unaffected)."
++    DBUS_CFLAGS=""
++    DBUS_LIBS=""
++    MENU_CPPFLAGS="-DMENU_NO_DBUS"
++    # gettext only translates GTK key labels for D-Bus menus.
++    INTL_LIBS=""
+ fi
+ 
+ # Generate GNUmakefile from GNUmakefile.in
+@@ -142,6 +134,8 @@
+ # Use sed to substitute placeholders
+ sed -e "s|@DBUS_CFLAGS@|$DBUS_CFLAGS|g" \
+     -e "s|@DBUS_LIBS@|$DBUS_LIBS|g" \
++    -e "s|@MENU_CPPFLAGS@|$MENU_CPPFLAGS|g" \
++    -e "s|@INTL_LIBS@|$INTL_LIBS|g" \
+     GNUmakefile.in > GNUmakefile
+ 
+ echo "Configuration complete!"

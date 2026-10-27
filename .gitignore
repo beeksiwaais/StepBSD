@@ -8,3 +8,6 @@ SHA256SUMS
 
 # StepBSD: the pkg repository stepbsd/build-ports.sh builds (CI artifact)
 /stepbsd-packages/
+# StepBSD: install test output and the harness it clones
+/tests/out/
+/nextbsd-ci/

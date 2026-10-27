@@ -1,0 +1,2 @@
+# Applied in order by build-desktop.sh, against the pin in ../../sources.lock.
+no-libiconv-freebsd.patch

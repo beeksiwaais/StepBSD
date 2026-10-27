@@ -1,0 +1,73 @@
+Origin: NextBSD
+Description: Build the portable, non-Mach libdispatch on NextBSD.
+ NextBSD ships <mach/mach.h> system-wide, so libdispatch's
+ __has_include(<mach/mach.h>) probes turn on the Darwin Mach/QoS event
+ backend, which is wrong for FreeBSD's kqueue and breaks GNUstep's fd-based
+ dispatch sources (the global menu's WindowMonitor stops tracking the
+ frontmost app). Force the probes off, as gershwin-developer does with sed
+ (Library/Scripts/install-system-domain.sh, NextBSD branch); -DHAVE_MACH=OFF
+ is passed by build-desktop.sh.
+
+diff -ru a/os/voucher_private.h b/os/voucher_private.h
+--- a/os/voucher_private.h	2026-07-08 22:30:36.000000000 +0000
++++ b/os/voucher_private.h	2026-10-27 08:17:33.622946000 +0000
+@@ -25,7 +25,7 @@
+ #include <os/base.h>
+ #include <os/availability.h>
+ #endif
+-#if __has_include(<mach/mach.h>)
++#if 0
+ #include <os/object.h>
+ #include <mach/mach.h>
+ #endif
+@@ -373,7 +373,7 @@
+ 		dispatch_queue_attr_t _Nullable attr,
+ 		voucher_t _Nullable voucher);
+ 
+-#if __has_include(<mach/mach.h>)
++#if 0
+ /*!
+  * @group Voucher Mach SPI
+  * SPI intended for clients that need to interact with mach messages or mach
+@@ -628,7 +628,7 @@
+ 	mach_voucher_t originator_persona_mach_voucher,
+ 	uint64_t originator_unique_pid, mach_voucher_t *persona_mach_voucher);
+ 
+-#endif // __has_include(<mach/mach.h>)
++#endif // 0
+ 
+ __END_DECLS
+ 
+diff -ru a/private/source_private.h b/private/source_private.h
+--- a/private/source_private.h	2026-07-08 22:30:36.000000000 +0000
++++ b/private/source_private.h	2026-10-27 08:17:33.623045000 +0000
+@@ -560,7 +560,7 @@
+ void
+ dispatch_source_cancel_and_wait(dispatch_source_t source);
+ 
+-#if __has_include(<mach/mach.h>)
++#if 0
+ /*!
+  * @typedef dispatch_mig_callback_t
+  *
+diff -ru a/src/voucher.c b/src/voucher.c
+--- a/src/voucher.c	2026-07-08 22:30:36.000000000 +0000
++++ b/src/voucher.c	2026-10-27 08:17:33.623241000 +0000
+@@ -1873,7 +1873,7 @@
+ 	(void)voucher;
+ }
+ 
+-#if __has_include(<mach/mach.h>)
++#if 0
+ voucher_t
+ voucher_copy_with_persona_mach_voucher(mach_voucher_t persona_mach_voucher)
+ {
+@@ -1917,7 +1917,7 @@
+ 	(void)persona_info;
+ 	return -1;
+ }
+-#endif // __has_include(<mach/mach.h>)
++#endif // 0
+ 
+ void
+ _voucher_activity_debug_channel_init(void)

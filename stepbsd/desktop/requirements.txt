@@ -1,0 +1,19 @@
+# The NextBSD packages StepBSD's desktop is built against and runs on: the
+# E24 plan's target list for Gershwin on NextBSD ("Target nextbsd.txt: NextBSD
+# packages only"), from the NextBSD repository only. The base packages
+# (NextBSD-everything: userland with Apple's libxml2/libxslt/libffi/curl and
+# ICU, freebsd-compat with OpenSSL, contrib) come first.
+#
+# NextBSD-gershwin-support (wget, xdotool, lcms2) is not published in
+# nextbsd-pkg yet; the components that need it build without it.
+NextBSD-everything
+NextBSD-xlibs
+NextBSD-mesa
+NextBSD-mesa-x11
+NextBSD-xlibre
+NextBSD-displayserver-support
+NextBSD-gnustep-support
+NextBSD-printing-support
+# Build: the on-machine toolchain (D11: installed by default on Gershwin
+# images, so the desktop can be rebuilt on the machine).
+NextBSD-toolchain

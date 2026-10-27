@@ -1,0 +1,6 @@
+# Applied in order by build-desktop.sh, against the pin in ../../sources.lock.
+# Imported from gershwin-developer, which wrote them against that pin.
+gpbs-incr-timeout.patch
+inter-bold.patch
+net-wm-pid.patch
+screen-frame-not-workarea.patch

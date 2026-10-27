@@ -1,0 +1,5 @@
+# Applied in order by build-desktop.sh, against the pin in ../../sources.lock.
+# fix-timer-spin.patch is gershwin-developer's; no-mach.patch is our own
+# (Origin: NextBSD), replacing its sed of the <mach/mach.h> probes.
+fix-timer-spin.patch
+no-mach.patch

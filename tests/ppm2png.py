@@ -1,10 +1,12 @@
 """Convert a qemu screendump (binary PPM) to PNG and decide whether it shows
 the X desktop or still the text console.
 
-usage: python3 -I ppm2png.py in.ppm out.png
+usage: python3 -I ppm2png.py [--menubar] in.ppm out.png
 
 Exit 1 when the picture looks like a text console: mostly black, or only a
-handful of colours (vt(4) draws 16).
+handful of colours (vt(4) draws 16). With --menubar, also exit 1 unless the
+desktop session's menu bar is up: Menu draws a light grey bar across the
+top of the screen, where the login window shows its blue wallpaper.
 """
 import struct
 import sys
@@ -43,14 +45,28 @@ def write_png(path, w, h, rgb):
     open(path, "wb").write(png)
 
 
-w, h, rgb = read_ppm(sys.argv[1])
-write_png(sys.argv[2], w, h, rgb)
+args = sys.argv[1:]
+menubar = args[:1] == ["--menubar"]
+if menubar:
+    args = args[1:]
+w, h, rgb = read_ppm(args[0])
+write_png(args[1], w, h, rgb)
 
 pixels = [rgb[i:i + 3] for i in range(0, len(rgb), 3)]
 black = sum(1 for p in pixels if max(p) < 16) / len(pixels)
 colours = len(set(pixels))
-print(f"screenshot {w}x{h}: {black:.0%} black, {colours} colours -> {sys.argv[2]}")
+print(f"screenshot {w}x{h}: {black:.0%} black, {colours} colours -> {args[1]}")
 if black > 0.6 or colours < 24:
     print("FAIL: the screen still looks like the text console")
     sys.exit(1)
-print("OK: the screen shows a graphical desktop")
+print("OK: the screen is graphical")
+if menubar:
+    # Rows 2-17: inside the bar, clear of its edges. The bar is a light grey
+    # gradient; the login window's wallpaper there is a saturated blue.
+    strip = [rgb[(y * w + x) * 3:(y * w + x) * 3 + 3] for y in range(2, 18) for x in range(w)]
+    light = sum(1 for p in strip if min(p) >= 150 and max(p) - min(p) <= 16) / len(strip)
+    print(f"top strip: {light:.0%} light grey")
+    if light < 0.5:
+        print("FAIL: no menu bar: the desktop session did not start")
+        sys.exit(1)
+    print("OK: the desktop session's menu bar is up")

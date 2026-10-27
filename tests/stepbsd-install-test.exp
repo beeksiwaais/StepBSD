@@ -6,14 +6,15 @@
 # usage: stepbsd-install-test.exp <harness-dir> <phase> qemu-system-x86_64 <args...>
 #
 #   install  live ISO (UEFI): interrupt the loader for a serial console, let
-#            the live `admin` autologin land, run stepbsd-install onto vtbd0,
-#            add a serial-console loader fragment to the installed root (so
-#            phase `check` can be driven), power off.
+#            the live `admin` autologin land, install onto vtbd0 with
+#            NextBSD's installer (its unattended backend, do-install.sh, the
+#            one the nextbsd-installer TUI runs), add a serial-console loader
+#            fragment to the installed root (so phase `check` can be driven),
+#            power off.
 #   check    installed disk (amd64: BIOS boot, pmbr + gptboot; arm64: UEFI):
-#            verify the root,
-#            GNUstep at run time and the launchd jobs, remove the serial
-#            fragment again (so phase `gui` boots like a real machine), power
-#            off.
+#            verify the root, GNUstep at run time and the launchd jobs, remove
+#            the serial fragment again (so phase `gui` boots like a real
+#            machine), power off.
 #
 # Loader handling comes from the nextbsd-ci harness (patterns.tcl,
 # loader.exp.inc) at the tag tests/stepbsd-install-test.sh pins.
@@ -34,16 +35,23 @@ proc fail {msg} {
 }
 
 # Wait for the session the console getty gives us: NextBSD logs the
-# password-less `admin` in automatically; fall back to typing the name.
+# password-less `admin` in automatically and greets it with nextbsd-fetch's
+# banner; fall back to typing the name at a login prompt.
 proc await_shell {secs} {
-    global timeout re_panic re_session_msg
+    global timeout re_panic re_session_msg re_fetch_banner
     set timeout $secs
     expect {
         timeout { fail "no login session within ${secs}s" }
         -re $re_panic { fail "kernel panic" }
         -re $re_session_msg { }
+        -re $re_fetch_banner { }
         "login:" { send "admin\r"; exp_continue }
         "Password:" { send "\r"; exp_continue }
+        # A login by name prints no banner. Its prompt is coloured (escape
+        # sequences between user, host and directory) and console messages
+        # can follow it, so wait for what zsh's line editor sends when it
+        # shows a prompt: bracketed paste on, ESC [ ? 2004 h.
+        -re {\[\?2004h} { }
     }
     sleep 3
     set timeout 60
@@ -104,43 +112,52 @@ switch -- $phase {
         await_shell 600
 
         must "cat /etc/os-release | grep -q '^NAME=\"StepBSD\"'"
-        must "test -x /usr/local/sbin/stepbsd-install"
-        must "$sudo /usr/local/sbin/stepbsd-install -y -d vtbd0" 1800
+        must "test -x /usr/sbin/nextbsd-installer"
+        must "$sudo /usr/libexec/nextbsd-installer/do-install.sh -d vtbd0" 2400
         must "$sudo gpart show -l vtbd0"
-        must "$sudo mount /dev/ufs/ROOTFS /mnt"
-        must "$sudo sh -c 'printf \"console=\\\"comconsole,vidconsole\\\"\\nboot_multicons=\\\"YES\\\"\\nboot_serial=\\\"YES\\\"\\ncomconsole_speed=\\\"115200\\\"\\nboot_mutemsgs=\\\"NO\\\"\\n\" > /mnt/boot/loader.conf.d/zz-ci-serial.conf'"
-        must "$sudo umount /mnt"
+        # NextBSD's root has no /mnt.
+        must "mkdir -p /tmp/target && $sudo mount /dev/ufs/NEXTBSD /tmp/target"
+        must "$sudo sh -c 'printf \"console=\\\"comconsole,vidconsole\\\"\\nboot_multicons=\\\"YES\\\"\\nboot_serial=\\\"YES\\\"\\ncomconsole_speed=\\\"115200\\\"\\nboot_mutemsgs=\\\"NO\\\"\\n\" > /tmp/target/boot/loader.conf.d/zz-ci-serial.conf'"
+        must "$sudo umount /tmp/target"
         power_off
     }
     check {
         await_shell 600
 
         must "grep -q '^NAME=\"StepBSD\"' /etc/os-release"
-        # Root is the installed disk, grown past the 1.5 GiB-headroom image size.
-        must "mount -p | awk '\$2 == \"/\"' | grep -q '^/dev/ufs/ROOTFS'"
+        # Root is the installed disk (nextbsd-installer labels it NEXTBSD),
+        # filling the 16 GiB disk.
+        must "mount -p | awk '\$2 == \"/\"' | grep -q '^/dev/ufs/NEXTBSD'"
         must "df -k / | awk 'NR == 2 { exit !(\$2 > 8 * 1024 * 1024) }'"
-        must "pkg info -e gnustep-base && pkg info -e gnustep-gui && pkg info -e gnustep-back && pkg info -e windowmaker && pkg info -e gworkspace && pkg info -e xlibre-server"
-        # Window Maker is StepBSD's build (no ImageMagick), and pkg keeps
-        # upgrading it from the StepBSD repository.
-        must "test \"\$(pkg query %R windowmaker)\" = StepBSD && ! pkg info -e ImageMagick7"
+        # The desktop is StepBSD-desktop from the StepBSD repository; every
+        # package comes from NextBSD's or StepBSD's, none from FreeBSD's (E24).
+        must "pkg info -e StepBSD-desktop && test \"\$(pkg query %R StepBSD-desktop)\" = StepBSD"
+        must "test ! -e /usr/local/etc/pkg/repos/FreeBSD.conf && test -z \"\$(pkg query %R | grep -v -x -e NextBSD -e StepBSD)\""
         must "grep -q 'releases/download/packages-' /usr/local/etc/pkg/repos/StepBSD.conf"
         # Every library the desktop's programs need resolves at run time.
+        # (Not Xorg: it is setuid, rtld ignores ldd's trace variable for it as
+        # a user and it would start; the image build's closure check covers it.)
         foreach prog {
-            /usr/local/GNUstep/System/Applications/GWorkspace.app/GWorkspace
-            /usr/local/GNUstep/System/Applications/SystemPreferences.app/SystemPreferences
-            /usr/local/GNUstep/System/Applications/Terminal.app/Terminal
-            /usr/local/bin/wmaker
-            /usr/local/bin/Xorg
+            /System/Applications/Workspace.app/Workspace
+            /System/Applications/SystemPreferences.app/SystemPreferences
+            /System/Applications/Terminal.app/Terminal
+            /System/Applications/TextEdit.app/TextEdit
+            /System/Library/CoreServices/Applications/LoginWindow.app/LoginWindow
+            /System/Library/CoreServices/Applications/Menu.app/Menu
+            /System/Library/CoreServices/Applications/WindowManager.app/WindowManager
+            /System/Library/Tools/dshelper
         } {
             must "test -x $prog && ! ldd $prog | grep 'not found'"
         }
-        # gnustep-base works: write and read back a user default.
-        must ". /usr/local/GNUstep/System/Library/Makefiles/GNUstep.sh && defaults write StepBSDTest probe 42 && defaults read StepBSDTest probe | grep -qw 42"
-        must "launchctl list | grep -q org.gnustep.gdomap"
-        must "launchctl list | grep -q org.stepbsd.boot"
-        # The boot job has built the caches (at image build, or first boot).
-        must "i=0; until test -e /var/db/stepbsd/caches || \[ \$i -ge 60 \]; do sleep 5; i=\$((i+1)); done; test -e /var/db/stepbsd/caches" 360
-        must "test -s /var/run/ld-elf.so.hints && ldconfig -r | grep -q GNUstep"
+        # gnustep-base loads (rtld checks symbol versions; ldd does not) and
+        # works, and reads Gershwin's system defaults.
+        # A console login by name has HOME=/ (NextBSD creates homes on its
+        # automatic login, which LoginWindow turns off), so give the probes one.
+        must "export HOME=/tmp/stepbsd-test && mkdir -p \$HOME && . /System/Library/Makefiles/GNUstep.sh && defaults write StepBSDTest probe 42 && defaults read StepBSDTest probe | grep -qw 42"
+        must "export HOME=/tmp/stepbsd-test && . /System/Library/Makefiles/GNUstep.sh && ! defaults read NSGlobalDomain 2>&1 | grep -q 'writable by someone other'"
+        # System LaunchDaemons are listed in launchd's system domain (root's),
+        # as on Darwin; a user's launchctl lists its own domain.
+        must "$sudo launchctl list > /tmp/jobs && grep -q org.gnustep.gdomap /tmp/jobs && grep -q io.github.gershwin-desktop.dshelper /tmp/jobs && grep -q io.github.gershwin-desktop.loginwindow /tmp/jobs"
         must "$sudo rm /boot/loader.conf.d/zz-ci-serial.conf"
         power_off
     }

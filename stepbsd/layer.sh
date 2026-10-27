@@ -3,13 +3,18 @@
 # SOURCED by build.sh (pkg assembly mode), right after its pkglist.txt step and
 # before it drops pkg's residue, so it shares build.sh's shell and variables:
 #   ROOT  repo root        RF       staged rootfs      ARCH / ABIARCH
-#   FBSD_REPOS             dir holding the FreeBSD.conf pkg repo (step 5)
+#   NBREPO                 dir holding the NextBSD.conf pkg repo (step 2)
 #   ABI / OSVERSION / IGNORE_OSVERSION / ASSUME_ALWAYS_YES  (exported)
 # and reads:
-#   STEPBSD_PKGDIR   the StepBSD pkg repository for this arch, built from
-#                    stepbsd/ports.txt by stepbsd/build-ports.sh
+#   STEPBSD_PKGDIR   the StepBSD pkg repository for this arch: StepBSD-desktop,
+#                    built by stepbsd/desktop/package.sh
 #                    (default: $ROOT/stepbsd-packages)
-#   STEPBSD_PKG_URL  where images fetch that repository from once published
+#   STEPBSD_PKG_URL  where installed systems fetch that repository from
+#
+# StepBSD follows NextBSD's E24 plan for GNUstep and the Gershwin desktop: the
+# image holds NextBSD packages and StepBSD-desktop (GNUstep and Gershwin built
+# from source on NextBSD, in /System) and nothing from FreeBSD's package
+# repository, which it no longer configures (E24 "End state").
 #
 # It also defines stepbsd_identity, which build.sh calls after it writes the
 # NextBSD version identity, to brand the image.
@@ -21,15 +26,6 @@ STEPBSD=$ROOT/stepbsd
 STEPBSD_PKGDIR=${STEPBSD_PKGDIR:-$ROOT/stepbsd-packages}
 STEPBSD_PKG_URL=${STEPBSD_PKG_URL:-https://github.com/beeksiwaais/StepBSD/releases/download/packages-${ARCH}}
 
-# Names from a stepbsd/*.txt list: comments and blank lines dropped, and lines
-# tagged @<arch> kept only for that pkg ABI arch.
-stepbsd_list() {
-    sed -e 's/#.*//' "$1" | awk -v a="$ABIARCH" '
-        NF == 0 { next }
-        NF == 1 { print $1; next }
-        $2 == "@" a { print $1 }'
-}
-
 # Every NEEDED soname of every ELF object in the rootfs that no .so in the
 # rootfs provides, one per line as "<soname> <first object needing it>".
 stepbsd_missing_libs() {
@@ -37,7 +33,8 @@ stepbsd_missing_libs() {
     find "$RF" \( -name '*.so' -o -name '*.so.*' \) \( -type f -o -type l \) \
         -exec basename {} \; 2>/dev/null | sort -u > "$_prov"
     find "$RF/bin" "$RF/sbin" "$RF/lib" "$RF/libexec" "$RF/usr/bin" \
-         "$RF/usr/sbin" "$RF/usr/lib" "$RF/usr/libexec" "$RF/usr/local" \
+         "$RF/usr/sbin" "$RF/usr/lib" "$RF/usr/libexec" "$RF/usr/X11" \
+         "$RF/System" \
          -type f -perm -u+x -o -type f -name '*.so*' 2>/dev/null |
     while IFS= read -r f; do
         readelf -d "$f" 2>/dev/null |
@@ -47,64 +44,45 @@ stepbsd_missing_libs() {
     rm -f "$_prov" "$_need"
 }
 
-echo "==> [stepbsd] GNUstep desktop layer ($ABIARCH)"
+echo "==> [stepbsd] desktop layer ($ABIARCH)"
 
-# 1. Packages. Two repositories: StepBSD's own (the ports in stepbsd/ports.txt,
-#    built with StepBSD's options) at priority 10, and FreeBSD's (build.sh step
-#    5) at 0, so a port StepBSD builds always comes from StepBSD. The local
-#    repository is named StepBSD like the published one the image points at,
-#    so pkg upgrade on an installed system keeps following it.
+# 1. Packages: StepBSD-desktop (which pulls the NextBSD X, Mesa, GNUstep
+#    support and printing packages it was built against) and the on-machine
+#    toolchain (E24 D11), from the NextBSD and StepBSD repositories only.
 [ -s "$STEPBSD_PKGDIR/packagesite.pkg" ] || {
     echo "ERROR: [stepbsd] no StepBSD pkg repository at $STEPBSD_PKGDIR" >&2
-    echo "       (build it with: sh stepbsd/build-ports.sh $STEPBSD_PKGDIR)" >&2
+    echo "       (build it with: sh stepbsd/desktop/package.sh $STEPBSD_PKGDIR)" >&2
     exit 1
 }
 STEPBSD_REPOS=$(mktemp -d)
-cp "$FBSD_REPOS/FreeBSD.conf" "$STEPBSD_REPOS/"
+cp "$NBREPO/NextBSD.conf" "$STEPBSD_REPOS/"
 cat > "$STEPBSD_REPOS/StepBSD.conf" <<CONF
-StepBSD: {
-  url: "file://$STEPBSD_PKGDIR",
-  signature_type: none,
-  priority: 10,
-  enabled: yes
-}
+StepBSD: { url: "file://$STEPBSD_PKGDIR", signature_type: none, enabled: yes }
 CONF
-STEPBSD_PKGS=$(stepbsd_list "$STEPBSD/packages.txt" | tr '\n' ' ')
-echo "==> [stepbsd] pkg install: $STEPBSD_PKGS"
 pkg -r "$RF" -o REPOS_DIR="$STEPBSD_REPOS" update -f
-# shellcheck disable=SC2086
-pkg -r "$RF" -o REPOS_DIR="$STEPBSD_REPOS" install -y $STEPBSD_PKGS
+pkg -r "$RF" -o REPOS_DIR="$STEPBSD_REPOS" install -y StepBSD-desktop NextBSD-toolchain
 rm -rf "$STEPBSD_REPOS"
 
-for _p in gnustep-base gnustep-gui gnustep-back windowmaker gworkspace xlibre-server; do
-    pkg -r "$RF" info -e "$_p" || { echo "ERROR: [stepbsd] $_p is not installed" >&2; exit 1; }
-done
-# Every port in ports.txt came from the StepBSD repository.
-for _o in $(sed -e 's/#.*//' "$STEPBSD/ports.txt" | awk 'NF { print $1 }'); do
-    _r=$(pkg -r "$RF" query '%R' "$_o")
-    [ "$_r" = StepBSD ] || {
-        echo "ERROR: [stepbsd] $_o came from repository '$_r', not StepBSD" >&2
-        exit 1
-    }
-done
-if pkg -r "$RF" info -e ImageMagick7; then
-    echo "ERROR: [stepbsd] ImageMagick7 is installed; something still depends on it:" >&2
-    pkg -r "$RF" query '%rn' ImageMagick7 >&2
-    exit 1
-fi
-
-# The repository the shipped image upgrades StepBSD's ports from.
+# No FreeBSD repository on a StepBSD system (E24 "End state"; nextbsd#545);
+# build.sh step 5 still writes one for NextBSD's own images. The StepBSD
+# repository takes its place next to NextBSD's.
+rm -f "$RF/usr/local/etc/pkg/repos/FreeBSD.conf"
+mkdir -p "$RF/usr/local/etc/pkg/repos"
 cat > "$RF/usr/local/etc/pkg/repos/StepBSD.conf" <<CONF
 StepBSD: {
   url: "$STEPBSD_PKG_URL",
   signature_type: none,
-  priority: 10,
   enabled: yes
 }
 CONF
+STEPBSD_FOREIGN=$(pkg -r "$RF" query '%n %R' | awk '$2 != "NextBSD" && $2 != "StepBSD"')
+if [ -n "$STEPBSD_FOREIGN" ]; then
+    echo "ERROR: [stepbsd] packages from outside the NextBSD and StepBSD repositories:" >&2
+    echo "$STEPBSD_FOREIGN" | sed 's/^/      /' >&2
+    exit 1
+fi
 
-# 2. Every shared library any program or library in the image needs is in the
-#    image: the FreeBSD packages against NextBSD's base, and StepBSD's builds.
+# 2. Every shared library any program or library in the image needs is in it.
 echo "==> [stepbsd] shared-library closure"
 STEPBSD_MISSING=$(stepbsd_missing_libs)
 if [ -n "$STEPBSD_MISSING" ]; then
@@ -114,45 +92,34 @@ if [ -n "$STEPBSD_MISSING" ]; then
 fi
 echo "    every NEEDED library has a provider"
 
-# 3. The StepBSD overlay: installer, session, launchd jobs.
+# 3. The StepBSD overlay: the desktop's launchd jobs.
 echo "==> [stepbsd] overlay"
 cp -R "$STEPBSD/overlay/." "$RF/"
 chown -R 0:0 "$RF/System/Library/LaunchDaemons"
-chmod 0644 "$RF"/System/Library/LaunchDaemons/org.stepbsd.*.plist \
-           "$RF"/System/Library/LaunchDaemons/org.gnustep.*.plist
-chmod 0555 "$RF/usr/local/bin/startstep" "$RF/usr/local/sbin/stepbsd-install" \
-           "$RF/usr/local/libexec/stepbsd/xsession" "$RF/usr/local/libexec/stepbsd/boot"
+chmod 0644 "$RF"/System/Library/LaunchDaemons/*.plist
 
-# Login shells source the StepBSD profile: sh through /etc/profile, zsh (the
-# admin user's shell) through /etc/zprofile in sh emulation.
-if ! grep -q stepbsd "$RF/private/etc/profile" 2>/dev/null; then
-    cat >> "$RF/private/etc/profile" <<'PROF'
-
-# StepBSD: GNUstep environment, desktop autostart on ttyv0.
-[ -r /usr/local/etc/stepbsd/profile.sh ] && . /usr/local/etc/stepbsd/profile.sh
-PROF
-fi
-if ! grep -q stepbsd "$RF/private/etc/zprofile" 2>/dev/null; then
-    cat >> "$RF/private/etc/zprofile" <<'PROF'
-
-# StepBSD: GNUstep environment, desktop autostart on ttyv0.
-[[ -r /usr/local/etc/stepbsd/profile.sh ]] && emulate sh -c '. /usr/local/etc/stepbsd/profile.sh'
-PROF
-fi
-
-# 4. Linker hints and the caches a package post-install would build: the
-#    org.stepbsd.boot script, run once in a chroot when the rootfs is the build
-#    VM's own arch. A cross-built (arm64) image runs it on its first boot.
+# 4. GNUstep runs in the image: gnustep-base loads with every library it links
+#    (rtld checks symbol versions, which the closure check cannot) and writes
+#    and reads back a default. Native lanes only: a chroot cannot run another
+#    architecture's binaries.
 if [ "$ABIARCH" = "$(uname -p)" ]; then
-    echo "==> [stepbsd] native: linker hints + caches in chroot"
+    echo "==> [stepbsd] native: GNUstep run-time check"
     mkdir -p "$RF/dev"
     mount -t devfs devfs "$RF/dev"
-    chroot "$RF" /usr/local/libexec/stepbsd/boot ||
-        echo "WARN: [stepbsd] chroot boot script failed; the first boot retries" >&2
+    STEPBSD_RC=0
+    chroot "$RF" /usr/bin/env -i HOME=/tmp/stepbsd-check PATH=/bin:/usr/bin /bin/sh -c '
+        mkdir -p "$HOME" &&
+        . /System/Library/Makefiles/GNUstep.sh &&
+        defaults write StepBSDBuildCheck probe 42 &&
+        defaults read StepBSDBuildCheck probe | grep -qw 42' || STEPBSD_RC=$?
     umount "$RF/dev"
-    ls -l "$RF/private/var/run/ld-elf.so.hints" 2>/dev/null || true
+    rm -rf "$RF/tmp/stepbsd-check"
+    [ "$STEPBSD_RC" -eq 0 ] || {
+        echo "ERROR: [stepbsd] GNUstep does not run in the image" >&2
+        exit 1
+    }
 else
-    echo "==> [stepbsd] cross lane ($ABIARCH): linker hints + caches on first boot"
+    echo "==> [stepbsd] cross lane ($ABIARCH): GNUstep run-time check left to the boot test"
 fi
 
 echo "==> [stepbsd] installed packages by size (MiB, top 15)"
@@ -170,13 +137,4 @@ VERSION="${IMG_DATE}"
 VERSION_ID="15.1"
 HOME_URL="https://github.com/beeksiwaais/StepBSD"
 OSREL
-    cat > "$RF/etc/motd" <<'MOTD'
-
-Welcome to StepBSD: NextBSD with the GNUstep desktop.
-
-  startstep          start the GNUstep desktop (automatic on the first console)
-  sudo stepbsd-install
-                     install StepBSD from the live ISO onto a disk
-
-MOTD
 }

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  io.github.gershwin-desktop.loginwindow
+
+  The graphical login: /System/Library/Scripts/LoginWindow.sh (gershwin-system)
+  sources GNUstep.sh, starts X on :0 and runs LoginWindow.app. While this job
+  is loaded NextBSD's org.nextbsd.getty leaves the screen to it and keeps its
+  getty for serial consoles (and returns to ttyv0 if this job is unloaded).
+
+  From gershwin-desktop's targets/nextbsd overlay (BSD-2-Clause), unchanged.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.gershwin-desktop.loginwindow</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/System/Library/Scripts/LoginWindow.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/LoginWindow.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/LoginWindow.log</string>
+</dict>
+</plist>

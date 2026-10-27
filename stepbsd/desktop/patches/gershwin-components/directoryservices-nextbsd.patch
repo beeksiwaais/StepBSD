@@ -1,0 +1,45 @@
+Origin: NextBSD
+Description: DirectoryServices: nothing under /usr/local on NextBSD.
+ On FreeBSD the install registers /System/Library/Libraries with ldconfig
+ (nss_gershwin) and puts an rc.d script for dshelper in /usr/local/etc/rc.d.
+ On NextBSD neither applies, and nothing may go to /usr/local (E24 Q7):
+ its run-time linker searches /System/Library/Libraries by default (E24
+ audit 1), and launchd, which does not read rc.d, starts dshelper from the
+ system image's io.github.gershwin-desktop.dshelper job (as
+ gershwin-desktop's targets/nextbsd overlay does).
+
+diff -ru a/DirectoryServices/dshelper/GNUmakefile b/DirectoryServices/dshelper/GNUmakefile
+--- a/DirectoryServices/dshelper/GNUmakefile
++++ b/DirectoryServices/dshelper/GNUmakefile
+@@ -23,10 +23,14 @@
+ include $(GNUSTEP_MAKEFILES)/tool.make
+ 
+ # Install service files (platform-specific)
++# On NextBSD launchd starts dshelper (io.github.gershwin-desktop.dshelper,
++# from the system image); launchd does not read rc.d.
+ after-install::
+ ifeq ($(findstring freebsd,$(GNUSTEP_HOST_OS)),freebsd)
++ifneq ($(shell uname -s),NextBSD)
+ 	$(MKINSTALLDIRS) /usr/local/etc/rc.d
+ 	$(INSTALL) -m 555 dshelper.rc /usr/local/etc/rc.d/dshelper
++endif
+ endif
+ ifeq ($(findstring linux,$(GNUSTEP_HOST_OS)),linux)
+ 	@if command -v systemctl >/dev/null 2>&1; then \
+diff -ru a/DirectoryServices/nss_gershwin/GNUmakefile b/DirectoryServices/nss_gershwin/GNUmakefile
+--- a/DirectoryServices/nss_gershwin/GNUmakefile
++++ b/DirectoryServices/nss_gershwin/GNUmakefile
+@@ -32,9 +32,13 @@
+ 	@echo "$(INSTALL_DIR)" > /etc/ld.so.conf.d/gershwin.conf
+ 	ldconfig
+ endif
++# NextBSD's run-time linker searches /System/Library/Libraries by default,
++# so it needs no ldconfig entry (and nothing under /usr/local).
+ ifeq ($(findstring freebsd,$(GNUSTEP_HOST_OS)),freebsd)
++ifneq ($(shell uname -s),NextBSD)
+ 	install -d /usr/local/libdata/ldconfig
+ 	@echo "$(INSTALL_DIR)" > /usr/local/libdata/ldconfig/gershwin
+ 	ldconfig
++endif
+ endif
+ 

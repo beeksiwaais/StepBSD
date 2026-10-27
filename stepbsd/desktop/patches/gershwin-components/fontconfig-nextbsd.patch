@@ -1,0 +1,30 @@
+Origin: NextBSD
+Description: fontconfig: install the rule where the desktop reads it.
+ The surrogate-fonts rule went to /usr/local/etc/fonts/conf.d, outside
+ /System and under /usr/local, where nothing may go on NextBSD (E24 Q7). The
+ desktop's fontconfig file is /System/Library/Preferences/fonts.conf
+ (LoginWindow.sh sets FONTCONFIG_FILE), which includes
+ /System/Library/Preferences/Fontconfig, so on NextBSD the rule goes there.
+
+diff -ru a/fontconfig/GNUmakefile b/fontconfig/GNUmakefile
+--- a/fontconfig/GNUmakefile
++++ b/fontconfig/GNUmakefile
+@@ -98,5 +98,18 @@
+ install.local.shared.resources::
+ 	@true
+ 
++# On NextBSD nothing goes to /usr/local (E24 Q7). The desktop's fontconfig
++# file is /System/Library/Preferences/fonts.conf (LoginWindow.sh sets
++# FONTCONFIG_FILE), which includes /System/Library/Preferences/Fontconfig:
++# install the rule there instead.
++ifeq ($(shell uname -s),NextBSD)
++INSTALL_FILES = files/System/Library/Preferences/fonts.conf
++install:: nextbsd-install-fontconfig-rules
++nextbsd-install-fontconfig-rules: custom-install
++	mkdir -p $(DESTDIR)/System/Library/Preferences/Fontconfig
++	install -m 644 files/usr/local/etc/fonts/conf.d/99-block-surrogate-fonts.conf \
++	    $(DESTDIR)/System/Library/Preferences/Fontconfig/
++endif
++
+ include $(GNUSTEP_MAKEFILES)/rules.make
+ 

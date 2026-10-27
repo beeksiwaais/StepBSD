@@ -1,0 +1,3 @@
+# Applied in order by build-desktop.sh, against the pin in ../../sources.lock.
+# Imported from gershwin-developer, which wrote them against that pin.
+metadata.patch

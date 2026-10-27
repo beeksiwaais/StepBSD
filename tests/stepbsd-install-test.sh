@@ -2,15 +2,16 @@
 #
 # stepbsd-install-test.sh — end-to-end test of a StepBSD ISO in qemu:
 #
-#   1. install  boot the live ISO (UEFI), run stepbsd-install onto a blank
-#               16 GiB virtio disk
+#   1. install  boot the live ISO (UEFI), install onto a blank 16 GiB virtio
+#               disk with NextBSD's installer (do-install.sh)
 #   2. check    boot the installed disk (amd64: legacy BIOS, pmbr + gptboot;
 #               arm64: UEFI) and check the root file system, GNUstep at run
 #               time and the launchd jobs
 #   3. gui      boot the installed disk with UEFI like a real machine (no
-#               serial console), let the admin autologin start the desktop on
-#               ttyv0, and take a screenshot; fail if the screen is still the
-#               text console
+#               serial console), let launchd start LoginWindow (X and the
+#               GNUstep login window), log in as admin through it and check
+#               screenshots: the login window, then the desktop session's
+#               menu bar
 #
 # Phases 1 and 2 are driven over the serial console by
 # tests/stepbsd-install-test.exp.
@@ -111,9 +112,10 @@ expect "$HERE/stepbsd-install-test.exp" "$HARNESS" check \
     "$@" $CHECK_BOOT -nographic 2>&1 | tee "$OUT/check.log"
 grep -q 'STEPBSD-TEST-PASS: check' "$OUT/check.log" || { echo "FAIL: phase 2" >&2; exit 1; }
 
-echo "==> phase 3: desktop on the installed system (UEFI boot, ${GUI_WAIT}s)"
+echo "==> phase 3: desktop on the installed system (UEFI boot, ${GUI_WAIT}s, then log in)"
 MON=$OUT/monitor.sock
 rm -f "$MON"
+# shellcheck disable=SC2086
 "$@" -bios "$FW" $VIDEO -display none -serial "file:$OUT/gui-serial.log" \
     -monitor "unix:$MON,server,nowait" &
 QPID=$!
@@ -124,14 +126,21 @@ s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
 time.sleep(0.5); s.recv(65536)
 s.sendall((sys.argv[2] + "\n").encode())
-time.sleep(2)
+time.sleep(1)
 PY
 }
 sleep "$GUI_WAIT"
-monitor "screendump $OUT/desktop.ppm"
+monitor "screendump $OUT/login.ppm"
+# LoginWindow: type "admin" (no password) and log in. Its focus starts in
+# the user name field; Return moves to the password, Return again logs in.
+for k in a d m i n ret; do monitor "sendkey $k"; done
 sleep 2
+monitor "sendkey ret"
+sleep "${SESSION_WAIT:-90}"
+monitor "screendump $OUT/desktop.ppm"
 monitor quit || true
 wait "$QPID" || true
 
-python3 -I "$HERE/ppm2png.py" "$OUT/desktop.ppm" "$OUT/desktop.png"
-echo "==> PASS: StepBSD $ARCH installs, boots and starts its desktop"
+python3 -I "$HERE/ppm2png.py" "$OUT/login.ppm" "$OUT/login.png"
+python3 -I "$HERE/ppm2png.py" --menubar "$OUT/desktop.ppm" "$OUT/desktop.png"
+echo "==> PASS: StepBSD $ARCH installs, boots and runs its desktop"

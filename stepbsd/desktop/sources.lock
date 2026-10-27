@@ -1,0 +1,26 @@
+# StepBSD desktop sources: <name> <version> <sha256> <url>
+#
+# Upstream archives at pinned commits; build-desktop.sh refuses an archive
+# whose SHA-256 differs. Bumping a version is a deliberate edit of this file.
+#
+# The upstream libraries are pinned where gershwin-developer pins them
+# (Library/Scripts/checkout.sh, refreshed 2026-07-26), which is the tree its
+# patches (patches/) were written against. Gershwin's own repositories, which
+# gershwin-developer tracks unpinned, are pinned here at their main HEADs of
+# 2026-10-27. Version = <commit date>.<short commit>.
+swift-corelibs-libdispatch 20260708.95f592a 3c3d9496b9698ea5240f0139f59d604599e612972cec43196de932a2b3e69d79 https://github.com/apple/swift-corelibs-libdispatch/archive/95f592ab637c4d7916fa05d4d80cbc1ec7d0b2b8.tar.gz
+tools-make 20260722.4e31a03 2969f0b7a295173f07a72733ba5d50867aff66265515f49ed5d0806f07c0eeff https://github.com/gnustep/tools-make/archive/4e31a0310df5f0aa96ccd816d3b626e67c36f535.tar.gz
+libobjc2 20260726.c9f4002 1a3c5289207003bf2ba5503f670caaae910fa0ea59e08c22851fa13378dd71a0 https://github.com/gnustep/libobjc2/archive/c9f4002ade04d755f2a0e6c83daf2738dca03759.tar.gz
+libs-base 20260726.5bda522 62cc24fc653ad29e9716a041fce342c880521aab852cc4ce89549cc5526f74c7 https://github.com/gnustep/libs-base/archive/5bda52220a6d67382c9851cdfd91d459bfd2b489.tar.gz
+libs-gui 20260726.8f804fd c5bf21d719fcb690b0c0f29e16d0f72b61ca77c6686927bed18631a3533970f0 https://github.com/gnustep/libs-gui/archive/8f804fd520c60800961e0bee072066f4bbadca94.tar.gz
+libs-back 20260724.bbcc3de 3c55d2da5ce436dd1892cd2aae1572b9b98259b2c19499b8e34028fb63992819 https://github.com/gnustep/libs-back/archive/bbcc3de7cab63b6e65944edf02f2bbef9d8a7bbd.tar.gz
+libs-av 20260726.26566e2 78de65d61b7720382b9bac12dc930a3397e95ea4448a05057542c4dceb6d277b https://github.com/gnustep/libs-av/archive/26566e25043ffc354364a9a5ff2c69252f81d404.tar.gz
+gershwin-system 20260917.bb8186c c3969f4a0e912c73082b4bfeb5b47ab1de1e3bb378da0a8c25a662af18bc152a https://github.com/gershwin-desktop/gershwin-system/archive/bb8186cdb8ab5dcafc469228e6eb60b3c8f43a97.tar.gz
+gershwin-assets 20260917.67e6946 a6cdb533555ddaa0b1e472189b9338df9657c3919a3b1bf7a4bce640e8a84042 https://github.com/gershwin-desktop/gershwin-assets/archive/67e6946db9c47c8a666730f4e086d8c63986265b.tar.gz
+gershwin-components 20260918.c1d9095 f557fada3785d042e0cc64e0caade401f23b5a6179286e07e5ed4b8216a75322 https://github.com/gershwin-desktop/gershwin-components/archive/c1d9095217bcae020887a0c93a685304ba863423.tar.gz
+gershwin-systempreferences 20260917.d5809a8 534e43d4c49abc62fe037d57f65c854a64f57e0c91ffc0f120e57924198f256b https://github.com/gershwin-desktop/gershwin-systempreferences/archive/d5809a837f2f094ab22624ca5c0b1f010b7348e9.tar.gz
+gershwin-workspace 20260917.817491d 0c8f52f95a5873c26c548e917bee6c67557955fd92781712e4e45c7fea29dd80 https://github.com/gershwin-desktop/gershwin-workspace/archive/817491d7dc7de207c3e71938b69f0f6d56000a81.tar.gz
+gershwin-eau-theme 20260917.3d741fb e6bf5ba0603ff3050da4fe1151c4a82c428567d437f9b3e9ea22127bcb86fe8d https://github.com/gershwin-desktop/gershwin-eau-theme/archive/3d741fbc61b62acb3dc1f3213ebe50a8a81c579c.tar.gz
+gershwin-terminal 20260917.2c77b9c ad02595cb63402a7b66a155d9c07e986d4207b295a3fd33b83c386d7a366e1b3 https://github.com/gershwin-desktop/gershwin-terminal/archive/2c77b9c3f7c8a4b7a200830f5ba81b5f9085be06.tar.gz
+gershwin-textedit 20260917.f7dc768 be7aae93a9eb9e6f0697ef58d0ee4359681c4a935ce421eb1b622c3c0cca0b5b https://github.com/gershwin-desktop/gershwin-textedit/archive/f7dc768641c1a23609cfb53e6cf17c2ea7f0c898.tar.gz
+gershwin-windowmanager 20260917.10b6797 9ad4d8061faed0a9df8da9dbe6140f810f81ba93347ad6e6333ad691996cfa40 https://github.com/gershwin-desktop/gershwin-windowmanager/archive/10b6797a3bfd391d559820232805f1a107fa9ec3.tar.gz

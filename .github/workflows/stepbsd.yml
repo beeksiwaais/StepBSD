@@ -7,8 +7,8 @@ name: StepBSD ISO
 # `continuous` release.
 #
 # The weekly schedule is what keeps a StepBSD image current without a commit:
-# every build installs the latest NextBSD packages (nextbsd-pkg) and the latest
-# FreeBSD GNUstep/X packages (pkg.FreeBSD.org .../latest).
+# every build installs, and builds the desktop against, the latest NextBSD
+# packages (nextbsd-pkg). Nothing comes from FreeBSD's package repository.
 #
 # Upstream's own build.yml (NextBSD's images) is disabled in this repository.
 
@@ -33,14 +33,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The ports StepBSD builds itself (stepbsd/ports.txt), natively per arch:
-  # an x86_64 VM, and an aarch64 VM (emulated, which vmactions recommends on
-  # the x86 runner). The result is a pkg repository the image build installs
-  # from and the release publishes as packages-<arch>.
-  ports:
-    name: ports (${{ matrix.arch }})
+  # StepBSD's desktop (stepbsd/desktop): GNUstep and the Gershwin desktop,
+  # built from the pinned sources on a NextBSD root with NextBSD-toolchain, as
+  # NextBSD's E24 plan has it (an on-machine build, so natively per arch: an
+  # x86_64 VM, and an aarch64 VM, emulated, which vmactions recommends on the
+  # x86 runner). The result is the StepBSD pkg repository (StepBSD-desktop)
+  # the image build installs from and the release publishes as packages-<arch>.
+  desktop:
+    name: desktop (${{ matrix.arch }})
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -52,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: build stepbsd/ports.txt inside FreeBSD VM
+      - name: build stepbsd/desktop inside FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
           release: '15.1'
@@ -62,9 +64,13 @@ jobs:
           usesh: true
           sync: rsync
           copyback: true
+          prepare: |
+            pkg install -y git rsync
           run: |
             set -eu
-            sh stepbsd/build-ports.sh stepbsd-packages
+            WORKDIR=/var/tmp/stepbsd-desktop sh stepbsd/desktop/package.sh stepbsd-packages
+            chflags -R noschg /var/tmp/stepbsd-desktop 2>/dev/null || true
+            rm -rf /var/tmp/stepbsd-desktop
 
       - uses: actions/upload-artifact@v4
         with:
@@ -75,7 +81,7 @@ jobs:
 
   build:
     name: build (${{ matrix.arch }})
-    needs: ports
+    needs: desktop
     runs-on: ubuntu-latest
     timeout-minutes: 150
     strategy:
@@ -232,7 +238,7 @@ jobs:
           pattern: packages-*
           path: packages/
 
-      # The pkg repository installed systems upgrade StepBSD's own ports from
+      # The pkg repository installed systems upgrade StepBSD-desktop from
       # (/usr/local/etc/pkg/repos/StepBSD.conf): one flat release per arch,
       # like nextbsd-pkg. Published before the images that point at it.
       - name: publish the StepBSD pkg repositories
@@ -244,7 +250,7 @@ jobs:
             t=packages-$a
             gh release view "$t" >/dev/null 2>&1 ||
               gh release create "$t" --title "StepBSD packages ($a)" --prerelease \
-                --notes "pkg repository for StepBSD $a: the ports in stepbsd/ports.txt, built with StepBSD's options. Configured on every StepBSD install as /usr/local/etc/pkg/repos/StepBSD.conf."
+                --notes "pkg repository for StepBSD $a: StepBSD-desktop (GNUstep and the Gershwin desktop, built from stepbsd/desktop). Configured on every StepBSD install as /usr/local/etc/pkg/repos/StepBSD.conf, next to NextBSD's repository."
             for f in $(gh release view "$t" --json assets --jq '.assets[].name'); do
               gh release delete-asset "$t" "$f" --yes
             done
@@ -263,7 +269,7 @@ jobs:
           ls -lh out/
           cat > notes.md <<NOTES
           Rolling StepBSD build from \`${GITHUB_SHA}\`: NextBSD (launchd, Mach, Darwin
-          userland) with the GNUstep desktop (Window Maker + GWorkspace).
+          userland) with GNUstep and the Gershwin desktop, built from source.
 
           | | amd64 (x86-64 PCs) | arm64 (UEFI: VMs, Apple Silicon VMs, Arm servers) |
           |---|---|---|
@@ -271,7 +277,7 @@ jobs:
           | installed disk image | \`$(basename out/StepBSD-amd64-*.img.zip)\` | \`$(basename out/StepBSD-arm64-*.img.zip)\` |
 
           The ISO boots BIOS or UEFI (amd64) or UEFI (arm64). It logs \`admin\` in and
-          starts the desktop. Run \`sudo stepbsd-install\` in Terminal to install to disk.
+          starts the desktop. Run \`sudo nextbsd-installer\` in Terminal to install to disk.
 
           CI installed each ISO to a disk in qemu, booted the installed system
           (amd64 with BIOS and with UEFI, arm64 with UEFI), and checked GNUstep at

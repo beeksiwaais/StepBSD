@@ -1,0 +1,22 @@
+Origin: NextBSD
+Description: LoginWindow: no service script on NextBSD.
+ launchd is NextBSD's init and does not read rc.d: the system image starts
+ LoginWindow from its io.github.gershwin-desktop.loginwindow job (as
+ gershwin-desktop's targets/nextbsd overlay does). The install found
+ /usr/local/etc/rc.d and put a FreeBSD rc.d script there, outside /System
+ and under /usr/local, where nothing may go (E24 Q7).
+
+diff -ru a/LoginWindow/GNUmakefile b/LoginWindow/GNUmakefile
+--- a/LoginWindow/GNUmakefile
++++ b/LoginWindow/GNUmakefile
+@@ -43,7 +43,9 @@
+ 		(cd .; tar chfX - /System/Library/Makefiles/tar-exclude-list $(APP_NAME).app) | sh -c 'cd "$(INSTALL_APPS_DIR)" && tar xf -'; \
+ 	fi
+ 	@echo "Installing service script..."
+-	@if [ -n "$(DESTDIR)" ]; then \
++	@if [ "$$(uname -s)" = NextBSD ]; then \
++		echo "NextBSD: launchd starts LoginWindow (io.github.gershwin-desktop.loginwindow, from the system image); no service script"; \
++	elif [ -n "$(DESTDIR)" ]; then \
+ 		echo "Installing to $(DESTDIR)/usr/local/etc/rc.d/loginwindow (staged install)"; \
+ 		mkdir -p $(DESTDIR)/usr/local/etc/rc.d; \
+ 		install -m 555 loginwindow $(DESTDIR)/usr/local/etc/rc.d/loginwindow; \

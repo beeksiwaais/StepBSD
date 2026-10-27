@@ -1,0 +1,7 @@
+# Applied in order by build-desktop.sh, against the pin in ../../sources.lock.
+# The first three are gershwin-developer's; nstimezones-modes.patch is our
+# own (Origin: NextBSD).
+nsmessageport-nonblocking-listener.patch
+nsrunloop-4cf-64bit.patch
+nsrunloop-nested-performers.patch
+nstimezones-modes.patch

@@ -1,0 +1,7 @@
+# Applied in order by build-desktop.sh, against the pin in ../../sources.lock.
+# Imported from gershwin-developer, which wrote them against that pin.
+dropdown-tracking.patch
+gsuppressappicon-no-create.patch
+menu-transient.patch
+nsopenurl-no-alert.patch
+view-redraw-scale-factor.patch

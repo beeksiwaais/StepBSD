@@ -1,0 +1,22 @@
+Origin: NextBSD
+Description: Do not link -liconv on FreeBSD-based systems.
+ FreeBSD's libc has iconv(3), and so has NextBSD's; a separate libiconv
+ exists only when FreeBSD's ports libiconv package is installed, which a
+ NextBSD system built from NextBSD packages does not have (E24: no FreeBSD
+ packages). gershwin-developer strips -liconv the same way for glibc, whose
+ libc has iconv too (install-system-domain.sh build_terminal). OpenBSD's
+ block stays: there iconv comes from GNU libiconv.
+
+--- a/GNUmakefile.preamble
++++ b/GNUmakefile.preamble
+@@ -25,10 +25,6 @@
+ 
+ ADDITIONAL_LDFLAGS += -lutil -lX11
+ 
+-ifeq ($(findstring freebsd,$(GNUSTEP_TARGET_OS)),freebsd)
+-ADDITIONAL_LDFLAGS += -liconv
+-endif
+-
+ # On OpenBSD, iconv is provided by GNU libiconv (its header rewrites iconv_* to
+ # libiconv_*), so the iconv symbols live in libiconv rather than libc and must
+ # be linked explicitly.

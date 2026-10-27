@@ -1,0 +1,105 @@
+Origin: NextBSD
+Description: Find the X server and X tools in /usr/X11 too.
+ NextBSD keeps its X11 stack in /usr/X11 (E23; NextBSD-xlibre, -xlibs), not
+ in FreeBSD ports' /usr/local. LoginWindow looked for X/Xorg only in
+ /usr/local/bin and /usr/bin, so it could not start a server; it, the
+ Keyboard and Mouse preference panes now try /usr/X11/bin first for X,
+ Xorg, setxkbmap, xkbcomp and xinput, keeping every existing path after it.
+
+diff -ru a/LoginWindow/KeyboardManager.m b/LoginWindow/KeyboardManager.m
+--- a/LoginWindow/KeyboardManager.m
++++ b/LoginWindow/KeyboardManager.m
+@@ -450,6 +450,7 @@
+ static const char *findSetxkbmap(void)
+ {
+     static const char *paths[] = {
++        "/usr/X11/bin/setxkbmap",
+         "/usr/local/bin/setxkbmap",
+         "/usr/bin/setxkbmap",
+         "/bin/setxkbmap",
+@@ -466,6 +467,7 @@
+ static const char *findXkbcomp(void)
+ {
+     static const char *paths[] = {
++        "/usr/X11/bin/xkbcomp",
+         "/usr/local/bin/xkbcomp",
+         "/usr/bin/xkbcomp",
+         "/bin/xkbcomp",
+diff -ru a/LoginWindow/LoginWindow.m b/LoginWindow/LoginWindow.m
+--- a/LoginWindow/LoginWindow.m
++++ b/LoginWindow/LoginWindow.m
+@@ -2889,7 +2889,8 @@
+     
+     // Find X server executable
+     NSString *xserverPath = nil;
+-    NSArray *possiblePaths = @[@"/usr/local/bin/X", @"/usr/local/bin/Xorg", @"/usr/bin/Xorg"];
++    /* NextBSD keeps X in /usr/X11 (E23). */
++    NSArray *possiblePaths = @[@"/usr/X11/bin/X", @"/usr/X11/bin/Xorg", @"/usr/local/bin/X", @"/usr/local/bin/Xorg", @"/usr/bin/Xorg"];
+     
+     for (NSString *path in possiblePaths) {
+         if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+diff -ru a/LoginWindow/LoginWindow_main.m b/LoginWindow/LoginWindow_main.m
+--- a/LoginWindow/LoginWindow_main.m
++++ b/LoginWindow/LoginWindow_main.m
+@@ -365,7 +365,8 @@
+     
+     // Find X server executable
+     NSString *xserverPath = nil;
+-    NSArray *possiblePaths = @[@"/usr/local/bin/X", @"/usr/local/bin/Xorg", @"/usr/bin/Xorg"];
++    /* NextBSD keeps X in /usr/X11 (E23). */
++    NSArray *possiblePaths = @[@"/usr/X11/bin/X", @"/usr/X11/bin/Xorg", @"/usr/local/bin/X", @"/usr/local/bin/Xorg", @"/usr/bin/Xorg"];
+     
+     for (NSString *path in possiblePaths) {
+         if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+@@ -541,9 +542,11 @@
+         }
+ 
+         if (vtArg) {
++            execl("/usr/X11/bin/Xorg", "Xorg", ":0", "-auth", "/var/run/xauth", vtArg, (char *)NULL);
+             execl("/usr/local/bin/Xorg", "Xorg", ":0", "-auth", "/var/run/xauth", vtArg, (char *)NULL);
+             execl("/usr/bin/Xorg", "Xorg", ":0", "-auth", "/var/run/xauth", vtArg, (char *)NULL);
+         } else {
++            execl("/usr/X11/bin/Xorg", "Xorg", ":0", "-auth", "/var/run/xauth", (char *)NULL);
+             execl("/usr/local/bin/Xorg", "Xorg", ":0", "-auth", "/var/run/xauth", (char *)NULL);
+             execl("/usr/bin/Xorg", "Xorg", ":0", "-auth", "/var/run/xauth", (char *)NULL);
+         }
+diff -ru a/Keyboard/KeyboardController.m b/Keyboard/KeyboardController.m
+--- a/Keyboard/KeyboardController.m
++++ b/Keyboard/KeyboardController.m
+@@ -46,6 +46,7 @@
+ 
+ static NSString *const kKeyboardDomain = @"KeyboardPreferences";
+ static NSString *const kDefaultKeyboardFile = @"/etc/default/keyboard";
++static NSString *const kSetxkbmapX11 = @"/usr/X11/bin/setxkbmap";   /* NextBSD (E23) */
+ static NSString *const kSetxkbmapLocal = @"/usr/local/bin/setxkbmap";
+ static NSString *const kSetxkbmapSystem = @"/usr/bin/setxkbmap";
+ 
+@@ -367,7 +368,7 @@
+     }
+ 
+     [self parseKeyboardMetadata];
+-    setxkbmapPath = [[self findExecutableFromCandidates:[NSArray arrayWithObjects:kSetxkbmapLocal, kSetxkbmapSystem, nil]] retain];
++    setxkbmapPath = [[self findExecutableFromCandidates:[NSArray arrayWithObjects:kSetxkbmapX11, kSetxkbmapLocal, kSetxkbmapSystem, nil]] retain];
+     metadataLoaded = YES;
+ }
+ 
+@@ -828,7 +829,7 @@
+     NSString *escapedModel = [self shellEscapedValue:model];
+ 
+     NSMutableString *script = [NSMutableString string];
+-    [script appendString:@"#!/bin/sh\nset -e\n\nsetxkbmap_bin=\"/usr/local/bin/setxkbmap\"\n[ -x \"$setxkbmap_bin\" ] || setxkbmap_bin=\"/usr/bin/setxkbmap\"\n[ -x \"$setxkbmap_bin\" ] || exit 0\n\n$setxkbmap_bin -option '' >/dev/null 2>&1 || true\ncmd=\"$setxkbmap_bin -model '"];
++    [script appendString:@"#!/bin/sh\nset -e\n\nsetxkbmap_bin=\"/usr/X11/bin/setxkbmap\"\n[ -x \"$setxkbmap_bin\" ] || setxkbmap_bin=\"/usr/local/bin/setxkbmap\"\n[ -x \"$setxkbmap_bin\" ] || setxkbmap_bin=\"/usr/bin/setxkbmap\"\n[ -x \"$setxkbmap_bin\" ] || exit 0\n\n$setxkbmap_bin -option '' >/dev/null 2>&1 || true\ncmd=\"$setxkbmap_bin -model '"];
+     [script appendString:escapedModel];
+     [script appendString:@"' -layout '"];
+     [script appendString:escapedLayout];
+diff -ru a/Mouse/MouseController.m b/Mouse/MouseController.m
+--- a/Mouse/MouseController.m
++++ b/Mouse/MouseController.m
+@@ -111,6 +111,7 @@
+ {
+     NSFileManager *fm = [NSFileManager defaultManager];
+     NSArray *candidates = [NSArray arrayWithObjects:
++        @"/usr/X11/bin/xinput",
+         @"/usr/bin/xinput",
+         @"/usr/local/bin/xinput",
+         @"/opt/local/bin/xinput",

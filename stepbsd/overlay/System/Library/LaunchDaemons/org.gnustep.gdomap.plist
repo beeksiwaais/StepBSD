@@ -3,10 +3,10 @@
 <!--
   org.gnustep.gdomap
 
-  The GNUstep Distributed Objects name server (port 538), what FreeBSD's
-  gnustep-base rc.d script starts. -f keeps it in the foreground so launchd
-  tracks the real process; without it gdomap forks, the parent exits and
-  KeepAlive respawns it against the port it still holds.
+  The GNUstep Distributed Objects name server (port 538), which the desktop's
+  services register through (dshelper among them). -f keeps it in the
+  foreground so launchd tracks the real process; without it gdomap forks, the
+  parent exits and KeepAlive respawns it against the port it still holds.
 -->
 <plist version="1.0">
 <dict>
@@ -14,7 +14,7 @@
     <string>org.gnustep.gdomap</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/GNUstep/System/Tools/gdomap</string>
+        <string>/System/Library/Tools/gdomap</string>
         <string>-f</string>
     </array>
     <key>RunAtLoad</key>

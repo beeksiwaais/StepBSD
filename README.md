@@ -1,27 +1,28 @@
 # StepBSD
 
-**NextBSD with the GNUstep desktop, on an installable ISO.**
+**NextBSD with GNUstep and the Gershwin desktop, on an installable ISO.**
 
 StepBSD is a fork of [NextBSD](https://github.com/nextbsd/nextbsd): a FreeBSD
 15.1 kernel with Darwin's system layer (`launchd` as PID 1, Mach IPC,
-`configd`, IOKit registry, `.plist` services). StepBSD adds the part a NeXT
-heritage calls for and NextBSD does not ship, a
-[GNUstep](https://gnustep.org) desktop, and adds an installer, so the ISO
-boots a live desktop and installs to disk:
+`configd`, the IOKit registry, `.plist` services). NextBSD keeps GNUstep out of
+its base on purpose ([PORTING.md](PORTING.md): "GNUstep is not on this ISO")
+and plans it as a desktop layer on top, in its
+[E24 plan](https://github.com/nextbsd/nextbsd-userland/wiki/E24-GNUstep-Gershwin-Requirements-Direction).
+StepBSD is that layer, built the way the plan says:
 
 | | NextBSD | StepBSD |
 |---|---|---|
-| System layer | launchd, Mach, Darwin userland | same, from NextBSD's packages |
-| GNUstep | support libraries only | gnustep-base 1.31, gui/back 0.32 |
-| Desktop | none (text console) | Window Maker + GWorkspace, Terminal, SystemPreferences, Preview, ImageViewer, Addresses, SimpleAgenda, Gorm, ProjectCenter |
-| X server | not in the default image | XLibre with libinput, scfb/vesa/modesetting |
-| ISO | live only | live + `stepbsd-install` (BIOS + UEFI GPT) |
+| System layer | launchd, Mach, Darwin userland | the same, from NextBSD's packages |
+| GNUstep | support libraries only | libobjc2, gnustep-make, -base, -gui, -back, built from source |
+| Desktop | none (text console) | Gershwin: LoginWindow, Workspace, Menu, WindowManager, SystemPreferences, Terminal, TextEdit and the rest |
+| X, Mesa, GNUstep's libraries | NextBSD packages, not in the default image | the same NextBSD packages, installed |
+| FreeBSD packages | the ports repo is configured | none; the image configures NextBSD's and StepBSD's repositories only |
+| Installer | `nextbsd-installer` | the same, installing the desktop too |
 
 ## Get it
 
 The [continuous release](https://github.com/beeksiwaais/StepBSD/releases/tag/continuous)
-is rebuilt every week and on every change. Each build has been installed to a
-disk and booted in CI before it is published.
+holds the latest images:
 
 | | amd64 | arm64 |
 |---|---|---|
@@ -52,93 +53,84 @@ qemu-system-aarch64 -machine virt -accel hvf -cpu host -m 4096 -smp 4 \
   -netdev user,id=net0 -device virtio-net-pci,netdev=net0,romfile=
 ```
 
-### Install on a PC
+### Install
 
-1. Write the ISO to a USB stick: `dd if=StepBSD-amd64-<date>.iso of=/dev/<stick> bs=1m`.
-2. Boot it. The live system logs `admin` in (no password) and starts the
-   desktop.
-3. Open Terminal (in the dock on the right) and run:
+1. Write the ISO to a USB stick (`dd if=StepBSD-<arch>-<date>.iso of=/dev/<stick> bs=1m`)
+   and boot it.
+2. Log in as `admin` (no password) at the login window, open Terminal and run
+   NextBSD's installer:
 
    ```sh
-   sudo stepbsd-install
+   sudo nextbsd-installer
    ```
 
-   Pick the target disk and type `yes`. **The whole disk is erased.** It is
-   partitioned GPT with BIOS boot code (amd64), an EFI system partition and a UFS
-   root labelled `ROOTFS`, the layout of NextBSD's disk image. The root
-   grows to fill the disk.
-4. Remove the stick and reboot.
+   Pick the disk and confirm. **The whole disk is erased.** It is
+   partitioned GPT (BIOS boot code on amd64, an EFI system partition, a UFS
+   root) and the running system, desktop included, is copied onto it.
+3. Remove the stick and reboot.
 
-Unattended: `sudo stepbsd-install -y -d ada0 -p` (installs without asking, then
-powers off).
+Unattended: `sudo /usr/libexec/nextbsd-installer/do-install.sh -d <disk>`,
+the installer's own back end.
 
 ## Using it
 
-- The desktop is Window Maker with GWorkspace, the GNUstep Workspace
-  Manager, which draws the desktop and the file viewers. The dock on the right
-  holds GWorkspace, Terminal, SystemPreferences, Preview and xterm; every
-  GNUstep application is in `/usr/local/GNUstep/System/Applications`.
-- The desktop starts by itself on the first virtual console. `touch
-  ~/.stepbsd-nodesktop` turns that off; `startstep` starts it by hand.
-  `~/.xsession` replaces the session.
-- `pkg install <name>` installs from NextBSD's repository and from FreeBSD's
-  ports packages (for example `pkg install gnumail pikopixel cenon`; `pkg
-  search -c gnustep` lists the GNUstep software).
+- launchd starts Gershwin's LoginWindow, which starts X. While it is
+  installed NextBSD logs nobody in automatically on the console: the login
+  window asks. The first account, `admin`, has no password.
+- GNUstep lives in `/System` (gnustep-make's `gershwin` layout):
+  applications in `/System/Applications`, frameworks, libraries and tools in
+  `/System/Library`. `. /System/Library/Makefiles/GNUstep.sh` sets up a
+  shell for building GNUstep software with the installed toolchain
+  (`NextBSD-toolchain`: clang, gmake, cmake, autotools, git).
+- `pkg upgrade` updates NextBSD from NextBSD's repository and the desktop
+  from StepBSD's (`StepBSD-desktop`).
 - Everything else is NextBSD: see [NEXTBSD-README.md](NEXTBSD-README.md)
   (`launchctl`, `ipconfig`, `ioreg`, `syslog`, ...).
 
 ## How it is built
 
-`build.sh` is NextBSD's image builder, run in a FreeBSD 15.1 VM in GitHub
-Actions. It installs `NextBSD-everything` from nextbsd-pkg into a staged
-root, then sources [`stepbsd/layer.sh`](stepbsd/layer.sh). The layer:
-
-1. installs [`stepbsd/packages.txt`](stepbsd/packages.txt) from two pkg
-   repositories: FreeBSD's, and StepBSD's own at a higher priority. StepBSD's
-   holds the ports in [`stepbsd/ports.txt`](stepbsd/ports.txt), built with
-   StepBSD's options by [`stepbsd/build-ports.sh`](stepbsd/build-ports.sh)
-   natively per architecture. Today that is Window Maker without ImageMagick,
-   which keeps about 1 GiB of ImageMagick, OpenEXR, numpy, gcc and Boost out
-   of the image. Installed systems keep upgrading those ports from StepBSD's
-   repository (`/usr/local/etc/pkg/repos/StepBSD.conf`);
-2. checks that every shared library any program in the image needs is in the
-   image, and fails the build otherwise;
-3. lays [`stepbsd/overlay/`](stepbsd/overlay) onto the root: the installer,
-   the X session, and launchd jobs for `gdomap` and for the linker hints and
-   caches;
-4. builds the linker hints and the font, MIME and GLib caches in a chroot
-   (amd64). The cross-built arm64 image builds them on its first boot.
-
-`build.sh` then makes the disk image and the live ISO exactly as NextBSD does.
+1. **The desktop** ([`stepbsd/desktop`](stepbsd/desktop)): GNUstep and
+   Gershwin from pinned sources, built on a NextBSD system assembled from
+   NextBSD packages, with NextBSD's own toolchain, into `/System`, and
+   packaged as `StepBSD-desktop`. What did not behave on NextBSD is patched
+   there (see its README); nothing is worked around in the image.
+2. **The image**: NextBSD's `build.sh`, run in a FreeBSD 15.1 VM, installs
+   `NextBSD-everything` and then sources [`stepbsd/layer.sh`](stepbsd/layer.sh),
+   which installs `StepBSD-desktop` and `NextBSD-toolchain` from NextBSD's and
+   StepBSD's repositories, drops the FreeBSD repository, adds the desktop's
+   launchd jobs (LoginWindow, dshelper, gdomap) and checks the result: no
+   package from anywhere else, every shared library present, and GNUstep
+   running. `build.sh` then makes the disk image and the live ISO exactly as
+   NextBSD does.
+3. **The test** ([`tests/stepbsd-install-test.sh`](tests/stepbsd-install-test.sh)):
+   in qemu, install the ISO onto a blank disk with NextBSD's installer, boot
+   the installed system (amd64: BIOS; arm64: UEFI), check the packages, the
+   libraries, GNUstep and the launchd jobs, then boot it with UEFI like a real
+   machine, log in as `admin` at the login window and check the screenshots:
+   the login window, then the desktop session's menu bar.
 
 ```sh
-# on FreeBSD 15.1 (amd64), as root; ARCH=arm64 cross-builds the arm64 image
-# (its stepbsd-packages/ must then come from build-ports.sh on an arm64 host):
+# on FreeBSD 15.1, as root, on the target architecture:
 pkg install -y git zip
-sh stepbsd/build-ports.sh stepbsd-packages    # StepBSD's own ports
-DIST_NAME=StepBSD ARCH=amd64 sh build.sh      # -> out/StepBSD-amd64-*.{iso,img}.zip
-sh tests/stepbsd-install-test.sh out/StepBSD-amd64-*.iso.zip   # needs qemu + expect
+sh stepbsd/desktop/package.sh stepbsd-packages
+DIST_NAME=StepBSD ARCH=$(uname -m) sh build.sh     # -> out/StepBSD-<arch>-*.{iso,img}.zip
+# anywhere with qemu and expect (KVM, or HVF on Apple Silicon for arm64):
+sh tests/stepbsd-install-test.sh out/StepBSD-<arch>-*.iso.zip
 ```
 
 ### CI and maintenance
 
-- [`stepbsd.yml`](.github/workflows/stepbsd.yml) builds StepBSD's ports in
-  native FreeBSD VMs, then the amd64 and arm64 ISOs, runs
-  [`tests/stepbsd-install-test.sh`](tests/stepbsd-install-test.sh) and
-  publishes `continuous`, plus the pkg repositories `packages-amd64` and
-  `packages-arm64`. On a runner of each architecture, the test installs
-  to a disk from the live ISO, boots the installed system (amd64: BIOS; arm64:
-  UEFI), checks GNUstep at run time, then boots it with UEFI and checks a
-  screenshot of the desktop. It runs on every push and
-  PR, and every Monday so new NextBSD and FreeBSD packages get picked up.
+- [`stepbsd.yml`](.github/workflows/stepbsd.yml) builds the desktop and the
+  images for amd64 and arm64, runs the install test on each and publishes
+  `continuous` and the pkg repositories `packages-amd64` and `packages-arm64`.
+  A weekly run rebuilds against NextBSD's latest packages.
 - [`sync-upstream.yml`](.github/workflows/sync-upstream.yml) merges
-  nextbsd/nextbsd into `sync/upstream` every Monday, builds and tests it, and
-  opens a pull request. A conflict opens an issue instead. StepBSD changes
-  only two hook lines and the artifact names in upstream's `build.sh`, so
-  merges are usually clean.
+  nextbsd/nextbsd into `sync/upstream` every week, builds and tests it, and
+  opens a pull request; a conflict opens an issue instead. StepBSD changes
+  only a few hook lines in upstream's `build.sh`.
 
 ## Licence
 
-BSD-2-Clause like NextBSD (see [LICENSE](LICENSE) and [NOTICE](NOTICE)).
-GNUstep is GPL/LGPL, and Window Maker and XLibre carry their own licences.
-All of them ship as unmodified FreeBSD packages.
+StepBSD's own files are BSD-2-Clause, like NextBSD's ([LICENSE](LICENSE),
+[NOTICE](NOTICE)). The desktop's components keep their licences (GPL, LGPL,
+MIT, Apache, BSD); see [stepbsd/desktop/NOTICE.md](stepbsd/desktop/NOTICE.md).

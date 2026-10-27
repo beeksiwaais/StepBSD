@@ -1,0 +1,6 @@
+# Applied in order by build-desktop.sh, against the pin in ../../sources.lock.
+menu-optional-dbus.patch
+directoryservices-nextbsd.patch
+loginwindow-nextbsd-launchd.patch
+fontconfig-nextbsd.patch
+x11-paths-nextbsd.patch

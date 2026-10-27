@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  io.github.gershwin-desktop.dshelper
+
+  Gershwin's DirectoryServices helper (user, group and authentication lookups
+  for LoginWindow and the desktop). It registers through GNUstep Distributed
+  Objects (org.gnustep.gdomap), so it needs no MachServices or Sockets; if it
+  starts before gdomap is up it exits and KeepAlive retries.
+
+  From gershwin-desktop's targets/nextbsd overlay (BSD-2-Clause), unchanged.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.gershwin-desktop.dshelper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/System/Library/Tools/dshelper</string>
+        <string>-d</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
