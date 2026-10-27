@@ -50,6 +50,10 @@ HARNESS=$(pwd)/nextbsd-ci/harness
 if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm 2>/dev/null || true; fi
 if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
     ACCEL="-accel kvm -cpu host"
+elif [ "$(uname -s)" = Darwin ] &&
+     case "$ARCH-$(uname -m)" in arm64-arm64|amd64-x86_64) true ;; *) false ;; esac; then
+    # macOS on the guest's own architecture (e.g. arm64 on Apple Silicon).
+    ACCEL="-accel hvf -cpu host"
 else
     ACCEL="-accel tcg -cpu max"
 fi

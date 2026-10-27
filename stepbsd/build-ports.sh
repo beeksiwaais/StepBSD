@@ -5,7 +5,7 @@
 # Runs as root on FreeBSD 15 of the target architecture (CI: a vmactions VM,
 # x86_64 or aarch64). The ports tree is a snapshot of freebsd-ports main, the
 # tree pkg.FreeBSD.org's "latest" packages come from, and every dependency is
-# installed from those packages (USE_PACKAGE_DEPENDS_ONLY), so the result links
+# installed from those packages with pkg before the build, so the result links
 # exactly the libraries the image installs beside it.
 #
 # usage: build-ports.sh <outdir>
@@ -40,11 +40,29 @@ if [ ! -f "$PORTSDIR/Mk/bsd.port.mk" ]; then
     fetch -o - "$PORTS_SNAPSHOT" | tar -xzf - -C "$PORTSDIR" --strip-components 1
 fi
 
-export BATCH=yes USE_PACKAGE_DEPENDS_ONLY=yes DISABLE_VULNERABILITIES=yes
+export BATCH=yes DISABLE_VULNERABILITIES=yes
+
+# The package names of a port's direct dependencies (build, lib, run, ...).
+# The ports framework prints them as <portdir>[@flavor]; pkg resolves the rest
+# of the closure itself.
+dep_packages() {
+    # shellcheck disable=SC2086
+    make -C "$PORTSDIR/$1" $2 build-depends-list run-depends-list | sort -u |
+    while read -r dir; do
+        case $dir in
+        *@*) make -C "${dir%@*}" FLAVOR="${dir#*@}" -V PKGBASE ;;
+        *)   make -C "$dir" -V PKGBASE ;;
+        esac
+    done
+}
 
 sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$HERE/ports.txt" |
 while read -r origin args; do
     echo "==> $origin $args"
+    deps=$(dep_packages "$origin" "$args" | tr '\n' ' ')
+    echo "    dependencies from packages: $deps"
+    # shellcheck disable=SC2086
+    pkg install -y $deps
     # shellcheck disable=SC2086
     make -C "$PORTSDIR/$origin" $args clean package
     find "$PORTSDIR/$origin/work/pkg" -name '*.pkg' -exec cp {} "$OUT/" \;
