@@ -11,3 +11,4 @@ SHA256SUMS
 # StepBSD: install test output and the harness it clones
 /tests/out/
 /nextbsd-ci/
+art/

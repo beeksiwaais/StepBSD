@@ -3,10 +3,12 @@
 #
 # ASSEMBLY selects how the rootfs gets the OS:
 #   pkg (default — every image this repo publishes)
-#       One `pkg install NextBSD-everything` from the nextbsd-pkg flat repo,
-#       done by this repo's own build.sh. nextbsd-ci is used by this repo
+#       One `pkg install $NB_META` from the nextbsd-pkg flat repo, done by
+#       this repo's own build.sh: NextBSD-server for the Server images (the
+#       default), NextBSD-desktop for Desktop images (nextbsd/nextbsd#680).
+#       nextbsd-ci is used by this repo
 #       only for the img/iso boot-test harness, never for assembly. It leaves
-#       NextBSD's pkg (from the NextBSD repo, via NextBSD-everything) and its
+#       NextBSD's pkg (from the NextBSD repo, via NextBSD-server) and its
 #       database in the image, and nextbsd-overlays supplies its config
 #       (/private/etc/pkg.conf, /private/etc/pkg/NextBSD.conf), so an
 #       installed system can `pkg update` / `pkg upgrade` out of the box and
@@ -33,14 +35,24 @@
 # mkimg are arch-agnostic.
 #
 # Produces:
-#   out/NextBSD-<arch>-<date>.img.zip   GPT disk image (BIOS+UEFI, rw UFS root)
-#   out/NextBSD-<arch>-<date>.iso.zip   live ISO (mfsroot -> uzip -> vfs.pivot)
+#   out/NextBSD-<Variant>-<arch>-<stamp>.img.zip   GPT disk image (BIOS+UEFI, rw UFS root)
+#   out/NextBSD-<Variant>-<arch>-<stamp>.iso.zip   live ISO (mfsroot -> uzip -> vfs.pivot)
 #
 # BOARD=rpi500 instead produces one artifact and no ISO:
-#   out/NextBSD-rpi500-<arch>-<date>.img.zip   MBR: FAT32 boot + rw UFS root
-# The board token comes FIRST and that is load-bearing -- build.yml's release
-# step does IMG=$(ls out/NextBSD-${ARCH}-*.img.zip) into a scalar, so an
-# arch-first name would match two files and break the existing arm64 lane.
+#   out/NextBSD-<Variant>-rpi5-<stamp>.img.zip     MBR: FAT32 boot + rw UFS root
+#
+# <Variant> is Server or Desktop, from the meta-package installed (NB_META,
+# below): the Server Preview and Desktop Preview images (nextbsd/nextbsd#678).
+#
+# <stamp> is <version>-<build>, e.g. 27.0.0-42: the ProductVersion and
+# ProductBuildVersion of the system the image installed, from the
+# /System/Library/CoreServices/SystemVersion.plist that NextBSD-server (before
+# nextbsd/nextbsd#680, NextBSD-everything) ships (nextbsd/nextbsd#536). Packages
+# from before nextbsd-pkg shipped that plist have none, and then <stamp> is
+# IMG_DATE, as it always was.
+# The board image carries rpi5 where the others carry the arch, so the
+# workflow's NextBSD-<Variant>-arm64-[0-9]* globs (anchored on the stamp's
+# leading digit) never match it.
 
 set -eu
 
@@ -50,8 +62,10 @@ set -eu
 : "${DIST_NAME:=StepBSD}"
 ARCH_EXPLICIT=${ARCH:+yes}
 ARCH=${ARCH:-amd64}
-# UTC build timestamp — the SINGLE source of truth for the version: CI passes
-# IMG_DATE so the artifact name, image, nextbsd-version and os-release all match.
+# UTC build timestamp. The version itself comes from the installed
+# SystemVersion.plist (step 6, nextbsd/nextbsd#536);
+# IMG_DATE names the image, os-release and nextbsd-version only when the
+# packages predate that plist. CI passes it so the names agree either way.
 : "${IMG_DATE:=$(date -u +%Y%m%d-%H%M%S)}"
 
 # Two names for 64-bit ARM, and they are NOT interchangeable:
@@ -62,7 +76,6 @@ ARCH=${ARCH:-amd64}
 # Normalize an `aarch64` ARCH to `arm64` so a hand-run `ARCH=aarch64 sh build.sh`
 # still finds the mirror, the pkg repo tag and mkisoimages.sh.
 case "$ARCH" in arm64|aarch64) ARCH=arm64; ABIARCH=aarch64 ;; *) ABIARCH="$ARCH" ;; esac
-PKG_ABI="FreeBSD:15:${ABIARCH}"
 
 # BOARD selects a board-specific media lane. Empty (the default) is the
 # generic PC/UEFI lane that has always been here. The rootfs is identical
@@ -79,7 +92,7 @@ rpi500)
         echo "ERROR: BOARD=rpi500 is arm64; got ARCH=$ARCH." >&2
         exit 1
     fi
-    ARCH=arm64; ABIARCH=aarch64; PKG_ABI="FreeBSD:15:aarch64"
+    ARCH=arm64; ABIARCH=aarch64
     ;;
 *)
     echo "ERROR: unknown BOARD=$BOARD (known: rpi500)." >&2
@@ -97,10 +110,55 @@ MIRROR="https://download.freebsd.org/ftp/releases/${ARCH}/${FREEBSD_VERSION}-REL
 # Used by ASSEMBLY=pkg — every image this repo publishes.
 PKG_REPO_URL="https://github.com/nextbsd/nextbsd-pkg/releases/download/continuous-${ARCH}"
 
+# fetch_retry OUT URL: fetch(1) URL to OUT, trying up to 5 times with a
+# growing wait (5, 10, 15, 20 s) between tries, for hosts that answer a
+# request with a transient error. raw.githubusercontent.com once returned
+# "Service Unavailable" for one of the Pi device trees and failed a whole
+# image build. Each try writes OUT.part and renames it only on success, so a
+# failed try never leaves a half-written OUT for a later build to reuse.
+fetch_retry() {
+    _fr_out=$1 _fr_url=$2 _fr_try=1
+    while :; do
+        if fetch -o "$_fr_out.part" "$_fr_url"; then
+            mv -f "$_fr_out.part" "$_fr_out"
+            return 0
+        fi
+        if [ "$_fr_try" -ge 5 ]; then
+            echo "ERROR: could not fetch $_fr_url after $_fr_try tries." >&2
+            return 1
+        fi
+        echo "==> fetch failed (try $_fr_try of 5); retrying in $((_fr_try * 5))s" >&2
+        sleep $((_fr_try * 5))
+        _fr_try=$((_fr_try + 1))
+    done
+}
+
+# NextBSD's package ABI (nextbsd-kernel#376), the same values nextbsd-pkg
+# stamps on every package and on the catalogue: NextBSD:27:<arch> (aarch64 on
+# arm64), OSVERSION 2700000. A NextBSD 27 system's own pkg computes exactly
+# this ABI, so the package database baked into the image matches the
+# installed system.
+NBOSVERSION=2700000
+NB_ABI="NextBSD:$((NBOSVERSION / 100000)):${ABIARCH}"
+
 # How the rootfs gets the OS (see header): `pkg` = every published image
-# (pkg install NextBSD-everything); `artifacts` = manual 1:1 artifact
+# (pkg install $NB_META); `artifacts` = manual 1:1 artifact
 # snapshot via nextbsd-ci's shared assembly.
 ASSEMBLY=${ASSEMBLY:-pkg}
+# The meta-package a pkg-assembled image installs (nextbsd/nextbsd#680):
+# NextBSD-server (the core OS; the Server images) or NextBSD-desktop
+# (NextBSD-server plus GNUstep and the desktop; the Desktop images). A repo
+# published before #680 has neither, only NextBSD-everything; then the
+# default falls back to it (step 2), so this script works on either side of
+# the nextbsd-pkg change.
+NB_META=${NB_META:-NextBSD-server}
+case "$NB_META" in
+  NextBSD-server|NextBSD-desktop|NextBSD-everything) ;;
+  *)
+    echo "ERROR: unknown NB_META='$NB_META' (expected NextBSD-server, NextBSD-desktop or NextBSD-everything)" >&2
+    exit 1
+    ;;
+esac
 case "$ASSEMBLY" in
   artifacts|pkg) ;;
   *)
@@ -108,6 +166,17 @@ case "$ASSEMBLY" in
     exit 1
     ;;
 esac
+# The image's variant, which names its files: Desktop for NextBSD-desktop,
+# Server otherwise. The desktop exists only as packages, so an artifacts
+# (1:1 component snapshot) image can't be a Desktop one.
+case "$NB_META" in
+  NextBSD-desktop) VARIANT=Desktop ;;
+  *)               VARIANT=Server ;;
+esac
+if [ "$VARIANT" = Desktop ] && [ "$ASSEMBLY" != pkg ]; then
+    echo "ERROR: NB_META=NextBSD-desktop needs ASSEMBLY=pkg (the desktop is only packaged)" >&2
+    exit 1
+fi
 echo "==> assembly mode: $ASSEMBLY"
 
 mkdir -p "$WORK" "$OUT" "$DIST"
@@ -115,7 +184,7 @@ mkdir -p "$WORK" "$OUT" "$DIST"
 chflags -R noschg "$WORK" 2>/dev/null || true
 rm -rf "$WORK"/* "$OUT"/*
 
-echo "==> build: NextBSD $ARCH${BOARD:+ board=$BOARD} (pkg ABI $PKG_ABI), stamp $IMG_DATE"
+echo "==> build: NextBSD $VARIANT $ARCH${BOARD:+ board=$BOARD} (pkg ABI $NB_ABI), stamp $IMG_DATE"
 
 # ---------------------------------------------------------------------------
 # 1. src.txz — ONLY for FreeBSD's release script (mkisoimages.sh) in the ISO
@@ -157,19 +226,21 @@ if [ "$ASSEMBLY" = artifacts ]; then
         "https://github.com/nextbsd/nextbsd-userland/releases/download/${C}/nextbsd-userland-${ARCH}.tar.gz"
     fetch -o "$ART/nextbsd-contrib-${ARCH}.tar.gz" \
         "https://github.com/nextbsd/nextbsd-contrib/releases/download/${C}/nextbsd-contrib-${ARCH}.tar.gz"
-    # kexts are best-effort: graphics is per-arch; intelwifi/intelethernet/
-    # nvidia exist only for amd64. A kext build in flight (or a 404 while a
-    # tag rolls) must not fail the image — the kext lanes assert what they
-    # need on boot.
+    # kexts are required: graphics and the FreeBSD kexts
+    # (nextbsd/nextbsd#554) are per-arch; NVIDIA (nextbsd/nextbsd#548) exists
+    # only for amd64. Each comes from its own repo.
+    # A missing asset fails the build instead of shipping an image without
+    # it (nextbsd/nextbsd#552).
     fetch -o "$ART/graphics-kexts-${ARCH}.tar.gz" \
-        "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/graphics-kexts-${ARCH}.tar.gz" \
-        || echo "WARN: no graphics-kexts-${ARCH} artifact; image ships without graphics kexts" >&2
+        "https://github.com/nextbsd/nextbsd-kernel-extensions-graphics/releases/download/${C}/graphics-kexts-${ARCH}.tar.gz" \
+        || { echo "ERROR: no graphics-kexts-${ARCH} artifact from nextbsd-kernel-extensions-graphics" >&2; exit 1; }
+    fetch -o "$ART/freebsd-kexts-${ARCH}.tar.gz" \
+        "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/freebsd-kexts-${ARCH}.tar.gz" \
+        || { echo "ERROR: no freebsd-kexts-${ARCH} artifact from nextbsd-kernel-extensions" >&2; exit 1; }
     if [ "$ARCH" = amd64 ]; then
-        for n in intelwifi-kext intelethernet-kext nvidia-kexts; do
-            fetch -o "$ART/${n}.tar.gz" \
-                "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/${n}.tar.gz" \
-                || echo "WARN: no ${n} artifact; continuing without it" >&2
-        done
+        fetch -o "$ART/nvidia-kexts-amd64.tar.gz" \
+            "https://github.com/nextbsd/nextbsd-kernel-extensions-nvidia/releases/download/${C}/nvidia-kexts-amd64.tar.gz" \
+            || { echo "ERROR: no nvidia-kexts-amd64 artifact from nextbsd-kernel-extensions-nvidia" >&2; exit 1; }
     fi
 
     # The SHARED assembly (nextbsd-ci, expected at $ROOT/nextbsd-ci) does the
@@ -213,15 +284,44 @@ NextBSD: {
 }
 CONF
 
+    # NextBSD's pkg-static, not the build VM's own pkg: the packages carry
+    # the NextBSD ABI, which only NextBSD's pkg knows (nextbsd-contrib
+    # src/pkg, patch 0005); FreeBSD's pkg stops at "Unknown OS 'NextBSD'".
+    # The same tool nextbsd-pkg builds the repository with: the
+    # nextbsd-contrib `continuous` pkg artifact for the BUILD HOST's arch
+    # (amd64 in CI, whatever arch is being imaged -- it is a static binary
+    # and only untars packages here, never runs them). The workflow
+    # downloads it into art/tool/ before the VM starts; a hand run fetches
+    # it. pkg-static is built against the releng/15.1 base, so the build VM
+    # must be FreeBSD 15.1 or newer. NextBSD's pkg reads /private/etc/pkg.conf
+    # and /private/etc/pkg/, which the VM doesn't have, so it gets an
+    # explicit empty config (-C) and the isolated repo directory (-R).
+    NBPKG_HOST=$(uname -m)
+    NBPKG_TGZ="$ROOT/art/tool/nextbsd-contrib-pkg-${NBPKG_HOST}.tar.gz"
+    if [ ! -s "$NBPKG_TGZ" ]; then
+        mkdir -p "$ROOT/art/tool"
+        fetch -o "$NBPKG_TGZ" \
+            "https://github.com/nextbsd/nextbsd-contrib/releases/download/continuous/nextbsd-contrib-pkg-${NBPKG_HOST}.tar.gz"
+    fi
+    NBTOOL="$WORK/nbpkg"; mkdir -p "$NBTOOL/root"
+    tar -C "$NBTOOL/root" -xzf "$NBPKG_TGZ" ./usr/sbin/pkg-static
+    : > "$NBTOOL/pkg.conf"
+
     # Install into $RF. `-r` sets the install root (host-driven, not chroot).
-    #   ABI=FreeBSD:15:<arch>  — for arm64 we cross-install aarch64 packages in
-    #                            the x86 VM; amd64 matches the VM natively.
-    #   OSVERSION=$(uname -K)  — pkg requires OSVERSION when ABI is set; the
-    #                            VM kernel (15.1) is the right value for both.
-    #   IGNORE_OSVERSION       — the rolling snapshot's stamp shouldn't gate.
-    export ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes
-    export ABI="$PKG_ABI" OSVERSION="$(uname -K)"
-    PKG="pkg -r $RF -o REPOS_DIR=$NBREPO"
+    # The target ABI goes in the ENVIRONMENT, not `-o ABI=`: with -r, pkg
+    # would otherwise derive it from the (still empty) root.
+    #   ABI=NextBSD:27:<arch>  -- for arm64 we cross-install aarch64 packages
+    #                            in the x86 VM; nothing from them is executed.
+    #   OSVERSION=2700000      -- pkg requires OSVERSION when ABI is set; it is
+    #                            the stamp every NextBSD package carries.
+    export ASSUME_ALWAYS_YES=yes
+    export ABI="$NB_ABI" OSVERSION="$NBOSVERSION"
+    PKG="$NBTOOL/root/usr/sbin/pkg-static -C $NBTOOL/pkg.conf -R $NBREPO -r $RF"
+    $PKG --version
+    # A pkg-static from before nextbsd-contrib's patch 0005 stops here with
+    # "Unknown OS 'NextBSD' in ABI string".
+    _tabi=$($PKG config ABI) || _tabi=
+    [ "$_tabi" = "$ABI" ] || { echo "ERROR: nextbsd-contrib's pkg-static does not know the ABI ${ABI} (got '${_tabi}'); it needs nextbsd-contrib's patch 0005 (nextbsd-kernel#376)" >&2; exit 1; }
 
     # Apple /private layout BEFORE anything is installed: etc, var and tmp
     # are relative symlinks into private/ from the start, as on Darwin. pkg's
@@ -237,9 +337,44 @@ CONF
         ln -s "private/$_pd" "$RF/$_pd"
     done
 
-    echo "==> pkg update + install NextBSD-everything into $RF (ABI=$ABI OSVERSION=$OSVERSION)"
     $PKG update -f
-    $PKG install -y NextBSD-everything
+    # NB_META must be in the catalogue. NextBSD-server falls back to
+    # NextBSD-everything for a repo published before nextbsd/nextbsd#680;
+    # NextBSD-desktop has no fallback (no desktop without it).
+    if [ -z "$($PKG rquery -r NextBSD '%n' "$NB_META" 2>/dev/null || true)" ]; then
+        if [ "$NB_META" = NextBSD-server ] \
+           && [ -n "$($PKG rquery -r NextBSD '%n' NextBSD-everything 2>/dev/null || true)" ]; then
+            echo "==> the NextBSD repo has no NextBSD-server (published before nextbsd/nextbsd#680); installing NextBSD-everything"
+            NB_META=NextBSD-everything
+        else
+            echo "ERROR: the NextBSD repo ($PKG_REPO_URL) has no $NB_META" >&2
+            exit 1
+        fi
+    fi
+    echo "==> pkg install $NB_META into $RF (ABI=$ABI OSVERSION=$OSVERSION)"
+    $PKG install -y "$NB_META"
+
+    # A Desktop image boots into the graphical login: NextBSD-desktop-apps'
+    # post-install script (Lua, which pkg runs against the -r root) enables
+    # org.nextbsd.WindowServer and org.nextbsd.loginwindow in launchd's
+    # overrides database, as `launchctl load -w` does. Check it did, and that
+    # the jobs it enabled are there, rather than ship a Desktop image that
+    # boots to a text console (nextbsd/nextbsd#678).
+    if [ "$VARIANT" = Desktop ]; then
+        for _f in System/Library/CoreServices/WindowServer \
+                  System/Library/LaunchDaemons/org.nextbsd.WindowServer.plist \
+                  System/Library/LaunchDaemons/org.nextbsd.loginwindow.plist; do
+            [ -e "$RF/$_f" ] || { echo "ERROR: NextBSD-desktop installed no /$_f" >&2; exit 1; }
+        done
+        _ovr="$RF/private/var/db/launchd.db/com.apple.launchd/overrides.plist"
+        for _l in org.nextbsd.WindowServer org.nextbsd.loginwindow; do
+            grep -A 3 "<key>$_l</key>" "$_ovr" 2>/dev/null | grep -q '<false/>' || {
+                echo "ERROR: $_l is not enabled in /var/db/launchd.db/com.apple.launchd/overrides.plist (NextBSD-desktop-apps' post-install script)" >&2
+                exit 1
+            }
+        done
+        echo "==> desktop: org.nextbsd.WindowServer and org.nextbsd.loginwindow start at boot"
+    fi
 fi
 
 # Fail loudly if the assembly laid down nothing (empty rootfs -> later steps
@@ -310,52 +445,44 @@ if [ "$ASSEMBLY" = pkg ]; then
 #    pkg (nextbsd-contrib src/pkg, patch 0002) reads /private/etc/pkg.conf and
 #    the repos in /private/etc/pkg/, then /usr/local/etc/pkg/repos/, and
 #    nextbsd-overlays (seeded in step 3b) ships exactly two files there:
-#      - /private/etc/pkg.conf: IGNORE_OSVERSION only. No ABI pin: pkg reads
-#        FreeBSD:15:<arch> from /usr/bin/uname's ELF note (#357's NextBSD:15
-#        came from FreeBSD's bootstrap shim, not from pkg itself).
+#      - /private/etc/pkg.conf: IGNORE_OSVERSION only. No ABI pin: on the
+#        installed system NextBSD's pkg computes NextBSD:27:<arch> itself
+#        (nextbsd-contrib src/pkg, patch 0005), the ABI the packages and the
+#        image's package database (installed above with ${NB_ABI}) carry.
 #      - /private/etc/pkg/NextBSD.conf: the nextbsd-pkg continuous-${MACHINE}
 #        flat repo, priority 100, unsigned (GitHub assets).
-#    build.sh adds one file of its own, /usr/local/etc/pkg/repos/FreeBSD.conf
-#    (pkg.FreeBSD.org/latest, the FreeBSD ports packages), so `pkg install` of
-#    a port works out of the box. It is a third-party repo: it has the default
-#    priority 0 (below NextBSD's 100), and NextBSD's pkg (patches 0001/0004)
-#    never takes pkg itself from it and confines its packages to /usr/local/
-#    and /var/. No /usr/local/etc/pkg.conf is written: pkg's config lives in
-#    /private/etc. The FreeBSD pkgbase base/kmods repos are never shipped;
-#    they stay on the build VM (its own /etc/pkg).
+#    NextBSD ships no FreeBSD repo config (nextbsd-kernel#376): there is no
+#    /usr/local/etc/pkg/repos/FreeBSD.conf, and /usr/local/etc/pkg/ is not
+#    created. The NextBSD repo is the only repo the image knows; anything that
+#    wants FreeBSD's packages (a user, by hand, or Gershwin's own setup)
+#    writes its own config under /usr/local/etc/pkg/repos/. No
+#    /usr/local/etc/pkg.conf is written: pkg's config lives in /private/etc.
+#    The FreeBSD pkgbase base/kmods repos are never shipped; they stay on the
+#    build VM (its own /etc/pkg).
 # ---------------------------------------------------------------------------
 for _pc in pkg.conf pkg/NextBSD.conf; do
     [ -s "$RF/private/etc/$_pc" ] || { echo "ERROR: nextbsd-overlays seed produced no /private/etc/$_pc" >&2; exit 1; }
 done
-FBSD_REPOS="$RF/usr/local/etc/pkg/repos"
-mkdir -p "$FBSD_REPOS"
-cat > "$FBSD_REPOS/FreeBSD.conf" <<CONF
-FreeBSD: {
-  url: "pkg+https://pkg.FreeBSD.org/FreeBSD:15:${ABIARCH}/latest",
-  mirror_type: "srv",
-  enabled: yes
-}
-CONF
 
 # ---------------------------------------------------------------------------
-# 5b. Bake pkglist.txt packages into the shipped rootfs from the FreeBSD ports
-#     repo, so BOTH the published .img and .iso (same rootfs) ship them out of
-#     the box. Empty since #545: pkg comes from the NextBSD repo through
-#     NextBSD-everything. It uses the FreeBSD.conf written just above via a
-#     REPOS_DIR override, so pkg ignores the build VM's own signed repos
-#     (which jam the SAT solver).
+# 5b. Bake pkglist.txt packages into the shipped rootfs, so BOTH the published
+#     .img and .iso (same rootfs) ship them out of the box. They come from the
+#     NextBSD repo only, through the same isolated REPOS_DIR ($NBREPO) as
+#     $NB_META above, so pkg ignores the build VM's own signed repos
+#     (which jam the SAT solver) and never reaches pkg.FreeBSD.org. Empty
+#     since #545: pkg comes from the NextBSD repo through NextBSD-server.
 #     pkg resolves each package's full dependency closure automatically — no
 #     manual runtime-lib audit (unlike the base srclist); the libscan step
 #     below then re-verifies the closure over the whole rootfs.
-#     ABI / OSVERSION / IGNORE_OSVERSION / ASSUME_ALWAYS_YES are still exported
-#     from the NextBSD-everything install above.
+#     It uses the same NextBSD pkg-static ($PKG) with the NextBSD ABI; ABI /
+#     OSVERSION / ASSUME_ALWAYS_YES are still exported, and the NextBSD
+#     catalogue is still fresh, from the $NB_META install above.
 # ---------------------------------------------------------------------------
 if [ -f "$ROOT/pkglist.txt" ]; then
     EXTRA_PKGS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$ROOT/pkglist.txt" | tr '\n' ' ')
     if [ -n "$EXTRA_PKGS" ]; then
-        echo "==> installing pkglist.txt packages from FreeBSD repo: $EXTRA_PKGS"
-        pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" update -f
-        pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" install -y $EXTRA_PKGS
+        echo "==> installing pkglist.txt packages from the NextBSD repo: $EXTRA_PKGS"
+        $PKG install -y $EXTRA_PKGS
     fi
 fi
 
@@ -367,10 +494,10 @@ fi
 #     things accumulate in the rootfs, and neither is needed at runtime:
 #
 #       - the downloaded package tarballs, in PKG_CACHEDIR (/var/cache/pkg).
-#         Every install above (NextBSD-everything, then pkglist.txt) leaves its
+#         Every install above ($NB_META, then pkglist.txt) leaves its
 #         .pkg files there. `pkg clean -a` is scoped to exactly this.
-#       - the fetched repository catalogues, in PKG_DBDIR
-#         (/var/db/pkg/repos/<repo>/db), written by the `pkg update` calls.
+#       - the fetched repository catalogue, in PKG_DBDIR
+#         (/var/db/pkg/repos/<repo>/db), written by the `pkg update` above.
 #         `pkg clean` does NOT touch these and there is no pkg subcommand that
 #         does, so they have to go by hand.
 #
@@ -390,15 +517,16 @@ fi
 #     Runs before ALL THREE consumers: the rw disk image (step 6), the compact
 #     rootfs.uzip (step 7), and the mfsroot.
 #     KEEP: /private/etc/pkg.conf and /private/etc/pkg/ — the repo *config*
-#     from nextbsd-overlays and /usr/local/etc/pkg/repos/FreeBSD.conf (step 5),
-#     which the shipped system needs so `pkg install` works out of the box — and
+#     from nextbsd-overlays (step 5), which the shipped system needs so
+#     `pkg install` works out of the box — and
 #     private/var/db/pkg/local.sqlite, the installed-package registry.
-#     The catalogues under private/var/db/pkg/repos are named per repo
-#     (NextBSD, and FreeBSD only if 5b ran); all of them go.
-#     Host-driven via `pkg -r`, matching the rest of this script (no chroot).
+#     The catalogues under private/var/db/pkg/repos are named per repo (only
+#     NextBSD: it is the only repo the build fetches); all of them go.
+#     Host-driven via `pkg -r`, matching the rest of this script (no chroot),
+#     and with the same NextBSD pkg-static that wrote the database.
 # ---------------------------------------------------------------------------
 echo "==> pkg clean: drop cached tarballs + fetched repository catalogues"
-pkg -r "$RF" clean -a -y || true
+$PKG clean -a -y || true
 # pkg clean leaves anything it does not recognise as its own (and its failure
 # is ignored above), so empty the cache directory itself: no downloaded
 # package ships in the image. The directory stays, as pkg expects it.
@@ -409,9 +537,59 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Version identity (single source of truth = $IMG_DATE).
+# 6. Version identity (nextbsd/nextbsd#536). The single source is Darwin's
+#    /System/Library/CoreServices/SystemVersion.plist, which NextBSD-server
+#    owns (NextBSD-everything before nextbsd/nextbsd#680; NextBSD-desktop
+#    requires NextBSD-server, so a Desktop image has it too): ProductName NextBSD, ProductVersion 27.0.0 (the kernel's
+#    kern.osrelease) and ProductBuildVersion <build> (nextbsd-pkg's run
+#    number), the same two values as the package version 27.0.0.<build>.
+#    Every reader takes them from the installed plist, so a fresh image and a
+#    `pkg upgrade`d system show the same thing:
+#      - sw_vers(1) (nextbsd-userland) reads the plist itself;
+#      - /bin/nextbsd-version, written below, reads it each time it runs;
+#      - /etc/os-release, which the login banner (nextbsd-fetch, PRETTY_NAME)
+#        reads, is generated from it: here for the image, and on the installed
+#        system by NextBSD-server's Lua post-install script, which pkg runs
+#        on every install and upgrade of the package. Both write these lines.
+#    Packages from before nextbsd-pkg shipped the plist have none; then all
+#    three fall back to IMG_DATE, as before.
 # ---------------------------------------------------------------------------
-cat > "$RF/etc/os-release" <<OSREL
+SYSVER_PLIST=/System/Library/CoreServices/SystemVersion.plist
+# plist_string <key> <file>: a <string> value of an XML plist, the way
+# nextbsd-pkg writes this one (each <key> followed by its <string>).
+plist_string() {
+    awk -v k="<key>$1</key>" 'index($0, k) {
+        if ($0 !~ /<string>/) getline
+        if (match($0, /<string>[^<]*<\/string>/)) print substr($0, RSTART + 8, RLENGTH - 17)
+        exit
+    }' "$2"
+}
+NB_NAME= NB_VERSION= NB_BUILD=
+if [ -f "$RF$SYSVER_PLIST" ]; then
+    NB_NAME=$(plist_string ProductName "$RF$SYSVER_PLIST")
+    NB_VERSION=$(plist_string ProductVersion "$RF$SYSVER_PLIST")
+    NB_BUILD=$(plist_string ProductBuildVersion "$RF$SYSVER_PLIST")
+fi
+if [ -n "$NB_NAME" ] && [ -n "$NB_VERSION" ] && [ -n "$NB_BUILD" ]; then
+    echo "==> version: $NB_NAME $NB_VERSION ($NB_BUILD), from $SYSVER_PLIST"
+    # The same lines NextBSD-server's post-install script writes.
+    cat > "$RF/etc/os-release" <<OSREL
+NAME="${NB_NAME}"
+VERSION="${NB_VERSION} (${NB_BUILD})"
+VERSION_ID="${NB_VERSION}"
+BUILD_ID="${NB_BUILD}"
+PRETTY_NAME="${NB_NAME} ${NB_VERSION} (${NB_BUILD})"
+ID=nextbsd
+ID_LIKE=freebsd
+HOME_URL="https://nextbsd.org"
+OSREL
+    # Image and ISO names: NextBSD-<Variant>-<arch>-27.0.0-<build>. It starts with a
+    # digit, like the datestamp did, so the workflow's [0-9]* globs still
+    # tell it from the rpi5 board image.
+    IMG_STAMP="${NB_VERSION}-${NB_BUILD}"
+else
+    echo "==> version: no $SYSVER_PLIST in the installed packages (from before nextbsd/nextbsd#536); using $IMG_DATE"
+    cat > "$RF/etc/os-release" <<OSREL
 NAME="NextBSD"
 PRETTY_NAME="NextBSD ${IMG_DATE}"
 ID=nextbsd
@@ -420,11 +598,32 @@ VERSION="${IMG_DATE}"
 VERSION_ID="15.1"
 HOME_URL="https://nextbsd.org"
 OSREL
-# /bin/nextbsd-version (if the userland package didn't ship one, write a stub).
+    IMG_STAMP="$IMG_DATE"
+fi
+# /bin/nextbsd-version (if the userland package didn't ship one): prints
+# `NextBSD 27.0.0 (<build>)` from the installed plist each time it runs, so it
+# follows `pkg upgrade`; the image's IMG_DATE only when there is no plist.
 if [ ! -x "$RF/bin/nextbsd-version" ]; then
     cat > "$RF/bin/nextbsd-version" <<NBV
 #!/bin/sh
-echo "NextBSD ${IMG_DATE}"
+# nextbsd-version: the installed NextBSD version and build, from
+# ${SYSVER_PLIST}, which NextBSD-server installs and
+# pkg upgrade replaces (nextbsd/nextbsd#536, #680). sw_vers(1) reads the same file.
+p=${SYSVER_PLIST}
+s() {
+	awk -v k="<key>\$1</key>" 'index(\$0, k) {
+		if (\$0 !~ /<string>/) getline
+		if (match(\$0, /<string>[^<]*<\\/string>/)) print substr(\$0, RSTART + 8, RLENGTH - 17)
+		exit
+	}' "\$p" 2>/dev/null
+}
+n=\$(s ProductName) v=\$(s ProductVersion) b=\$(s ProductBuildVersion)
+if [ -n "\$n" ] && [ -n "\$v" ] && [ -n "\$b" ]; then
+	echo "\$n \$v (\$b)"
+else
+	# No plist: packages from before it existed. The image's build stamp.
+	echo "NextBSD ${IMG_DATE}"
+fi
 NBV
     chmod 0555 "$RF/bin/nextbsd-version"
 fi
@@ -599,8 +798,9 @@ if [ "$BOARD" = rpi500 ]; then
             _dtb="$DIST/${RPI_FIRMWARE_TAG}-${d}.dtb"
             if [ ! -f "$_dtb" ]; then
                 echo "==> fetching ${d}.dtb from raspberrypi/firmware $RPI_FIRMWARE_TAG"
-                fetch -o "$_dtb" \
-                    "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_TAG}/boot/${d}.dtb"
+                fetch_retry "$_dtb" \
+                    "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_TAG}/boot/${d}.dtb" ||
+                    exit 1
             fi
             cp "$_dtb" "$BOOTSTAGE/${d}.dtb"
             # A flattened device tree opens with magic 0xd00dfeed, big-endian.
@@ -624,20 +824,19 @@ if [ "$BOARD" = rpi500 ]; then
     # mounted at install time nor in any package's file list. The image build
     # is the only thing that writes here, so it stages them.
     #
-    # They come from nextbsd-kernel-extensions' continuous release, where they
+    # They come from nextbsd-kernel-extensions-graphics' continuous release, where they
     # are published alongside the kexts, so an overlay stays versioned with the
     # driver it enables -- the two must agree about the node's compatible
     # string.
     #
-    # Missing overlays are NOT fatal: the image still boots, the driver simply
-    # cannot bind. That is the pre-#429 behaviour, so a fetch failure degrades
-    # to it rather than breaking the build.
+    # Missing overlays are fatal (nextbsd/nextbsd#552): the image would still
+    # boot, but the KMS drivers could not bind, and nothing else would notice.
     _ovl="$DIST/rpi5-overlays.tar.gz"
     if [ ! -f "$_ovl" ]; then
-        echo "==> fetching rpi5-overlays.tar.gz from nextbsd-kernel-extensions"
+        echo "==> fetching rpi5-overlays.tar.gz from nextbsd-kernel-extensions-graphics"
         fetch -o "$_ovl" \
-            "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/continuous/rpi5-overlays.tar.gz" \
-            || echo "WARNING: no overlays asset; KMS drivers will not bind (nextbsd#429)" >&2
+            "https://github.com/nextbsd/nextbsd-kernel-extensions-graphics/releases/download/continuous/rpi5-overlays.tar.gz" \
+            || { echo "ERROR: no rpi5-overlays.tar.gz from nextbsd-kernel-extensions-graphics; KMS drivers would not bind (nextbsd#429)" >&2; exit 1; }
     fi
     if [ -s "$_ovl" ]; then
         mkdir -p "$BOOTSTAGE/overlays"
@@ -720,7 +919,7 @@ hdmi_force_hotplug=1
 # the colour channels.
 #
 # The intent is that KMS owns the display instead, now that VideoCoreKMS
-# autoloads (nextbsd-kernel-extensions#185) -- at which point the firmware's
+# autoloads (nextbsd-kernel-extensions-graphics#185) -- at which point the firmware's
 # choice of depth stops mattering because nothing is drawing into its
 # framebuffer.
 #
@@ -758,7 +957,7 @@ hdmi_force_hotplug=1
 # nextbsd-fkms is deliberately NOT enabled. It brings up the firmware-KMS node,
 # which VideoCoreKMS.kext binds -- and firmware KMS cannot program a plane on
 # 2712, because the firmware does not service SET_PLANE
-# (nextbsd-kernel-extensions#48, measured). No planes means no hardware cursor.
+# (nextbsd-kernel-extensions-graphics#48, measured). No planes means no hardware cursor.
 #
 # VideoCore6KMS.kext drives the same display directly and does not need that
 # node. The two must never both be loaded, since they drive the same hardware,
@@ -792,7 +991,7 @@ dtoverlay=nextbsd-v3d
 #
 # Enabled, deliberately, even though vc4_kms.ko is not packaged yet: the driver
 # is under active development on this hardware
-# (nextbsd-kernel-extensions#51) and the nodes have to be enabled for it to
+# (nextbsd-kernel-extensions-graphics#51) and the nodes have to be enabled for it to
 # bind at all. Shipping it disabled would mean hand-editing this file on the
 # FAT32 partition after every image rebuild.
 #
@@ -842,10 +1041,11 @@ CFG
     # NVMe (dos label, p1 type 0x0c FAT32-LBA, p2 the OS). fat32lba is that
     # 0x0c; a plain fat32 (0x0b) is CHS-addressed and the wrong type here.
     echo "==> mkimg: MBR disk image (FAT32 boot + freebsd root)"
-    # Arch first, board second: NextBSD-arm64-rpi5-<date>.img. Sorts with the
-    # other arm64 images, and the globs that consume these are anchored on the
-    # datestamp ([0-9]*) so a board token can never be mistaken for one.
-    IMG_NAME="NextBSD-${ARCH}-rpi5-${IMG_DATE}.img"
+    # NextBSD-<Variant>-rpi5-<stamp>.img: rpi5 where the other images carry
+    # the arch, and the name the release publishes. The workflow's globs for
+    # the arm64 images are anchored on the stamp's leading digit
+    # (NextBSD-<Variant>-arm64-[0-9]*), so this one never matches them.
+    IMG_NAME="NextBSD-${VARIANT}-rpi5-${IMG_STAMP}.img"
     mkimg -s mbr -f raw \
         -p fat32lba:="$WORK/rpiboot.img" \
         -p freebsd:="$WORK/rootfs.ufs" \
@@ -892,7 +1092,7 @@ makefs -t msdos \
 #     partition) AND UEFI (the efi/ESP partition). freebsd-ufs is the
 #     read-write root.
 echo "==> mkimg: GPT disk image"
-# NextBSD-branded, datestamped image name — identical to the published
+# StepBSD-branded, datestamped image name — identical to the published
 # continuous asset, so the build output is uploaded + published as-is
 # (no rename). img-boot-test.sh discovers the member by its .img extension.
 IMG_NAME="${DIST_NAME}-${ARCH}-${IMG_DATE}.img"
@@ -1115,10 +1315,18 @@ vlog "pivot complete; exec launchd"
 # the union's normal ld-elf resolution (/lib + /usr/lib via hints), as on a
 # regular boot. PATH stays exported (the full default set above).
 unset LD_LIBRARY_PATH
-exec /sbin/launchd
+# Hand launchd /dev/null for stdin/stdout/stderr, not the console (#599). Our
+# own [init] lines above needed the console, but launchd only opens /dev/null
+# for fds that are CLOSED (testfd_or_openfd), so an inherited console would
+# put every PID 1 stderr line, and every job without StandardOutPath /
+# StandardErrorPath, on the screen. A disk boot starts launchd with no fds
+# open, so this makes the live ISO match it. Verbose boots are unaffected:
+# launchd opens /dev/console itself for its LOG_CONSOLE output under -v.
+exec /sbin/launchd </dev/null >/dev/null 2>&1
 # If we get here, exec failed — keep PID 1 alive so the panic message is the
-# exec error above, not "Going nowhere without my init!".
-echo "[init] FATAL: exec /sbin/launchd failed ($?)"
+# exec error above, not "Going nowhere without my init!". stdio now points at
+# /dev/null, so write this one straight to the console.
+echo "[init] FATAL: exec /sbin/launchd failed ($?)" >/dev/console 2>&1
 while : ; do sleep 60; done
 INITEOF
 chmod 0755 "$MFS/init"
